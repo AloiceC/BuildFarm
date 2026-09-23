@@ -1,0 +1,34 @@
+name: Pixiv Lite App · Android Test Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buildfarm-pixiv-lite-app-android-package
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check private source
+    uses: ./.github/workflows/private-flutter-v1.yml
+    with:
+      project_id: pixiv-lite-app
+      task: check
+      auth_backend: fine-grained-pat
+    secrets:
+      repo_token: ${{ secrets.PIXIV_LITE_APP_TOKEN }}
+
+  deliver:
+    name: Build and deliver Android package
+    needs: check
+    uses: ./.github/workflows/private-flutter-v1.yml
+    with:
+      project_id: pixiv-lite-app
+      task: deliver-android
+      source_sha: ${{ needs.check.outputs.source_sha }}
+      auth_backend: fine-grained-pat
+    secrets:
+      repo_token: ${{ secrets.PIXIV_LITE_APP_TOKEN }}
