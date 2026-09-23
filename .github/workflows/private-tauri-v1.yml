@@ -13,16 +13,23 @@ on:
         required: false
         type: string
         default: ''
-      github_app_client_id:
-        required: true
+      auth_backend:
+        required: false
         type: string
+        default: github-app
+      github_app_client_id:
+        required: false
+        type: string
+        default: ''
     outputs:
       source_sha:
         description: Exact private source commit used by this run
         value: ${{ jobs.run.outputs.source_sha }}
     secrets:
       app_private_key:
-        required: true
+        required: false
+      repo_token:
+        required: false
 
 permissions:
   contents: read
@@ -52,6 +59,7 @@ jobs:
 
       - name: Create short-lived private source token
         id: source-token
+        if: ${{ inputs.auth_backend == 'github-app' }}
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ inputs.github_app_client_id }}
@@ -66,7 +74,7 @@ jobs:
         id: source
         shell: pwsh
         env:
-          BUILDFARM_SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+          BUILDFARM_SOURCE_TOKEN: ${{ inputs.auth_backend == 'fine-grained-pat' && secrets.repo_token || steps.source-token.outputs.token }}
         run: >-
           python scripts/private-ci/fetch_private_source.py
           --repo "${{ steps.adapter.outputs.source_repo }}"
@@ -74,6 +82,8 @@ jobs:
           --source-sha "${{ inputs.source_sha }}"
           --task "${{ inputs.task }}"
           --dest "${{ runner.temp }}/buildfarm-private-source"
+          --token-kind "${{ inputs.auth_backend == 'fine-grained-pat' && 'pat' || 'github-app' }}"
+          --validation-backend "${{ inputs.auth_backend == 'fine-grained-pat' && 'commit-status' || 'check-run' }}"
 
       - name: Read private Tauri build manifest
         id: manifest
@@ -132,7 +142,7 @@ jobs:
 
       - name: Create fresh result token
         id: result-token
-        if: ${{ always() && steps.source.outputs.sha != '' && steps.private.outputs.success != '' }}
+        if: ${{ always() && inputs.auth_backend == 'github-app' && steps.source.outputs.sha != '' && steps.private.outputs.success != '' }}
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ inputs.github_app_client_id }}
@@ -144,13 +154,30 @@ jobs:
 
       - name: Write sanitized result to private commit Check Run
         id: check-write
-        if: ${{ always() && steps.result-token.outputs.token != '' }}
+        if: ${{ always() && inputs.auth_backend == 'github-app' && steps.result-token.outputs.token != '' }}
         continue-on-error: true
         shell: pwsh
         env:
           BUILDFARM_RESULT_TOKEN: ${{ steps.result-token.outputs.token }}
         run: >-
           python scripts/private-ci/post_private_check.py
+          --repo "${{ steps.adapter.outputs.source_repo }}"
+          --sha "${{ steps.source.outputs.sha }}"
+          --task "${{ inputs.task }}"
+          --result "${{ runner.temp }}/buildfarm-result.json"
+          --diagnostics "${{ runner.temp }}/buildfarm-diagnostics"
+          --upload-outcome "${{ steps.upload.outcome }}"
+
+      - name: Write result to private commit status
+        id: status-write
+        if: ${{ always() && inputs.auth_backend == 'fine-grained-pat' && steps.source.outputs.sha != '' && steps.private.outputs.success != '' }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          BUILDFARM_RESULT_TOKEN: ${{ secrets.repo_token }}
+          BUILDFARM_TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >-
+          python scripts/private-ci/post_private_status.py
           --repo "${{ steps.adapter.outputs.source_repo }}"
           --sha "${{ steps.source.outputs.sha }}"
           --task "${{ inputs.task }}"
@@ -165,7 +192,7 @@ jobs:
           python scripts/private-ci/finalize.py
           --result "${{ runner.temp }}/buildfarm-result.json"
           --delivery-upload "${{ steps.upload.outcome }}"
-          --check-write "${{ steps.check-write.outcome }}"
+          --check-write "${{ inputs.auth_backend == 'fine-grained-pat' && steps.status-write.outcome || steps.check-write.outcome }}"
 
       - name: Remove private source and runner-local diagnostics
         if: ${{ always() }}
