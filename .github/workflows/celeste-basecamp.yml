@@ -28,6 +28,6 @@ jobs:
       project_id: celeste-basecamp
       task: ${{ inputs.task }}
       source_sha: ${{ inputs.source_sha }}
-      github_app_client_id: ${{ vars.CELESTE_BASECAMP_CLIENT_ID }}
+      auth_backend: fine-grained-pat
     secrets:
-      app_private_key: ${{ secrets.CELESTE_BASECAMP_PRIVATE_KEY }}
+      repo_token: ${{ secrets.CELESTE_BASECAMP_TOKEN }}
