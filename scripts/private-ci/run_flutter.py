@@ -18,6 +18,8 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 TOKEN_RE = re.compile(r"(?i)(gh[psu]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})")
 SOURCE_LINE_RE = re.compile(r"^\s*\d+\s*\|")
 CARET_RE = re.compile(r"^\s*[\^~]+\s*$")
+UNIX_RUNNER_PATH_RE = re.compile(r"/(?:home|tmp)/runner(?:/[^\s:]+)+")
+WINDOWS_RUNNER_PATH_RE = re.compile(r"[A-Za-z]:\\(?:a|runner|actions-runner)(?:\\[^\s:]+)+", re.IGNORECASE)
 
 
 def gh_output(name: str, value: str) -> None:
@@ -38,8 +40,16 @@ def sha256(path: Path) -> str:
 
 def sanitize(text: str, source: Path) -> str:
     text = ANSI_RE.sub("", text)
-    source_text = str(source.resolve())
-    text = text.replace(source_text, "<src>")
+    replacements = {
+        str(source.resolve()): "<src>",
+        os.environ.get("RUNNER_TEMP", ""): "<runner-temp>",
+        os.environ.get("GITHUB_WORKSPACE", ""): "<workspace>",
+    }
+    for raw, replacement in replacements.items():
+        if raw:
+            text = text.replace(raw, replacement)
+    text = UNIX_RUNNER_PATH_RE.sub("<runner-path>", text)
+    text = WINDOWS_RUNNER_PATH_RE.sub("<runner-path>", text)
     text = TOKEN_RE.sub("<redacted>", text)
 
     cleaned: list[str] = []
@@ -212,6 +222,7 @@ def main() -> int:
 
     try:
         manifest = load_manifest(source, args.manifest)
+        project_id = str(manifest["project_id"])
         flutter = manifest["flutter"]
         check = manifest["check"]
         android = manifest["android"]
@@ -288,7 +299,7 @@ def main() -> int:
             if not output_dir.is_dir():
                 raise RuntimeError("Windows output directory missing")
             temp_base = Path(tempfile.mkdtemp(prefix="buildfarm-package-")) / (
-                f"pixiv-lite-app-{args.sha[:12]}-windows"
+                f"{project_id}-{args.sha[:12]}-windows"
             )
             archive = shutil.make_archive(str(temp_base), "zip", output_dir)
             raw_package = Path(archive)
@@ -300,7 +311,7 @@ def main() -> int:
             if not output.is_file():
                 raise RuntimeError("Android output file missing")
             temp_dir = Path(tempfile.mkdtemp(prefix="buildfarm-package-"))
-            raw_package = temp_dir / f"pixiv-lite-app-{args.sha[:12]}-android.apk"
+            raw_package = temp_dir / f"{project_id}-{args.sha[:12]}-android.apk"
             shutil.copy2(output, raw_package)
 
         if raw_package is not None:
