@@ -1,0 +1,35 @@
+name: Pixiv Lite App
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'BuildFarm task'
+        required: true
+        type: choice
+        default: check
+        options:
+          - check
+          - build-windows
+          - build-android
+          - deliver-windows
+          - deliver-android
+      source_sha:
+        description: 'Optional exact 40-character commit SHA. Leave blank to use ci/buildfarm.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  buildfarm:
+    uses: ./.github/workflows/private-flutter-v1.yml
+    with:
+      project_id: pixiv-lite-app
+      task: ${{ inputs.task }}
+      source_sha: ${{ inputs.source_sha }}
+    secrets:
+      app_id: ${{ secrets.PIXIV_LITE_APP_ID }}
+      app_private_key: ${{ secrets.PIXIV_LITE_APP_PRIVATE_KEY }}
