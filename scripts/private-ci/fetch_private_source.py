@@ -15,6 +15,7 @@ import zipfile
 
 API = "https://api.github.com"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+SAFE_PERMISSION_RE = re.compile(r"[^A-Za-z0-9_=,; ._-]")
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -143,6 +144,37 @@ def safe_extract(zip_path: Path, dest: Path) -> Path:
     return roots[0]
 
 
+def classify_http_error(exc: urllib.error.HTTPError) -> tuple[str, str]:
+    accepted = ""
+    try:
+        accepted = exc.headers.get("X-Accepted-GitHub-Permissions", "") or ""
+    except Exception:
+        pass
+    accepted = SAFE_PERMISSION_RE.sub("", accepted)[:200]
+
+    message = ""
+    try:
+        raw = exc.read(4096)
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+        message = str(data.get("message", "")).lower()
+    except Exception:
+        pass
+
+    if "resource not accessible by personal access token" in message:
+        reason = "pat-permission"
+    elif "bad credentials" in message:
+        reason = "bad-credentials"
+    elif "secondary rate limit" in message:
+        reason = "secondary-rate-limit"
+    elif "rate limit exceeded" in message:
+        reason = "rate-limit"
+    elif "saml" in message or "single sign-on" in message:
+        reason = "sso"
+    else:
+        reason = "github-http"
+    return reason, accepted
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
@@ -170,8 +202,17 @@ def main() -> int:
         if args.handoff_ref != "ci/buildfarm":
             raise ValueError("BuildFarm v1 handoff must be ci/buildfarm")
 
-        stage = "resolve-sha"
-        sha = resolve_sha(args.repo, args.handoff_ref, args.source_sha, token)
+        # For the PAT backend, an explicit exact SHA is already reproducible input.
+        # The archive request below validates that the SHA exists in the allowed repo,
+        # so avoid an otherwise redundant commit API lookup. Keep GitHub App behavior
+        # unchanged for existing projects such as Celeste Basecamp.
+        if args.token_kind == "pat" and args.source_sha.strip():
+            if not SHA_RE.fullmatch(args.source_sha.strip()):
+                raise ValueError("explicit source SHA must be a full 40-character SHA")
+            sha = args.source_sha.strip().lower()
+        else:
+            stage = "resolve-sha"
+            sha = resolve_sha(args.repo, args.handoff_ref, args.source_sha, token)
         write_output("sha", sha)
 
         if args.task != "check":
@@ -205,7 +246,9 @@ def main() -> int:
             print(f"SOURCE sha={sha} status=PASS credential=step-scoped")
         return 0
     except urllib.error.HTTPError as exc:
-        print(f"SOURCE status=FAIL stage={stage} http={exc.code}")
+        reason, accepted = classify_http_error(exc)
+        suffix = f" accepted={accepted}" if accepted else ""
+        print(f"SOURCE status=FAIL stage={stage} http={exc.code} reason={reason}{suffix}")
         return 1
     except urllib.error.URLError:
         print(f"SOURCE status=FAIL stage={stage} reason=network")
