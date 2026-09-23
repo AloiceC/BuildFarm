@@ -30,6 +30,6 @@ jobs:
       project_id: pixiv-lite-app
       task: ${{ inputs.task }}
       source_sha: ${{ inputs.source_sha }}
+      github_app_client_id: ${{ vars.PIXIV_LITE_APP_CLIENT_ID }}
     secrets:
-      app_id: ${{ secrets.PIXIV_LITE_APP_ID }}
       app_private_key: ${{ secrets.PIXIV_LITE_APP_PRIVATE_KEY }}
