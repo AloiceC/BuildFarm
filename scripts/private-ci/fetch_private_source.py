@@ -136,6 +136,31 @@ def pat_git_environment(token: str) -> dict[str, str]:
     return env
 
 
+def release_pat_git_environment(env: dict[str, str]) -> None:
+    env["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: basic <released>"
+
+
+def resolve_sha_with_git(repo: str, ref: str, token: str) -> str:
+    git_env = pat_git_environment(token)
+    remote = f"https://github.com/{repo}.git"
+    remote_ref = ref if ref.startswith("refs/") else f"refs/heads/{ref}"
+    try:
+        result = run_git(
+            ["ls-remote", "--exit-code", remote, remote_ref],
+            Path.cwd(),
+            git_env,
+        )
+        if result.returncode != 0:
+            raise GitSourceError(classify_git_failure(result.stderr))
+        first_line = next((line for line in result.stdout.splitlines() if line.strip()), "")
+        sha = first_line.split(maxsplit=1)[0].strip().lower() if first_line else ""
+        if not SHA_RE.fullmatch(sha):
+            raise GitSourceError("source-sha")
+        return sha
+    finally:
+        release_pat_git_environment(git_env)
+
+
 def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> Path:
     try:
         remove_tree(destination)
@@ -178,7 +203,7 @@ def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> 
             raise GitSourceError("git-metadata-cleanup") from exc
         return destination
     finally:
-        git_env["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: basic <released>"
+        release_pat_git_environment(git_env)
 
 
 def revoke(token: str) -> None:
@@ -320,10 +345,14 @@ def main() -> int:
         if args.handoff_ref != "ci/buildfarm":
             raise ValueError("BuildFarm v1 handoff must be ci/buildfarm")
 
-        if args.token_kind == "pat" and args.source_sha.strip():
-            if not SHA_RE.fullmatch(args.source_sha.strip()):
-                raise ValueError("explicit source SHA must be a full 40-character SHA")
-            sha = args.source_sha.strip().lower()
+        if args.token_kind == "pat":
+            if args.source_sha.strip():
+                if not SHA_RE.fullmatch(args.source_sha.strip()):
+                    raise ValueError("explicit source SHA must be a full 40-character SHA")
+                sha = args.source_sha.strip().lower()
+            else:
+                stage = "resolve-sha-git"
+                sha = resolve_sha_with_git(args.repo, args.handoff_ref, token)
         else:
             stage = "resolve-sha"
             sha = resolve_sha(args.repo, args.handoff_ref, args.source_sha, token)
