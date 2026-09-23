@@ -1,0 +1,233 @@
+name: Private Flutter Rust v1
+
+on:
+  workflow_call:
+    inputs:
+      project_id:
+        required: true
+        type: string
+      task:
+        required: true
+        type: string
+      source_sha:
+        required: false
+        type: string
+        default: ''
+      github_app_client_id:
+        required: true
+        type: string
+    secrets:
+      app_private_key:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buildfarm-${{ inputs.project_id }}-${{ inputs.task }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    name: ${{ inputs.project_id }} · ${{ inputs.task }}
+    runs-on: windows-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout public BuildFarm infrastructure
+        uses: actions/checkout@v4
+
+      - name: Read public project adapter
+        id: adapter
+        shell: pwsh
+        run: >-
+          python scripts/private-ci/read_adapter.py
+          --adapter projects/${{ inputs.project_id }}/adapter.toml
+
+      - name: Create short-lived private source token
+        id: source-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ inputs.github_app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ steps.adapter.outputs.source_owner }}
+          repositories: ${{ steps.adapter.outputs.source_name }}
+          permission-contents: read
+          permission-checks: read
+          skip-token-revoke: true
+
+      - name: Resolve handoff and download exact private SHA archive
+        id: source
+        shell: pwsh
+        env:
+          BUILDFARM_SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: >-
+          python scripts/private-ci/fetch_private_source.py
+          --repo "${{ steps.adapter.outputs.source_repo }}"
+          --handoff-ref "${{ steps.adapter.outputs.handoff_ref }}"
+          --source-sha "${{ inputs.source_sha }}"
+          --task "${{ inputs.task }}"
+          --dest "${{ runner.temp }}/buildfarm-private-source"
+
+      - name: Read private Flutter + Rust build manifest
+        id: manifest
+        shell: pwsh
+        run: >-
+          python scripts/private-ci/read_flutter_rust_manifest.py
+          --source-dir "${{ steps.source.outputs.source_dir }}"
+          --manifest "${{ steps.adapter.outputs.manifest_path }}"
+          --expected-project "${{ inputs.project_id }}"
+
+      - name: Require age recipient for delivery tasks
+        if: ${{ startsWith(inputs.task, 'deliver-') && steps.adapter.outputs.delivery_ready != 'true' }}
+        shell: pwsh
+        run: python -c "import sys; print('DELIVERY_CONFIG status=FAIL reason=age-recipient-unset'); sys.exit(1)"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ steps.manifest.outputs.java_version }}
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        env:
+          PUB_HOSTED_URL: https://pub.flutter-io.cn
+          FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+        with:
+          flutter-version: ${{ steps.manifest.outputs.flutter_version }}
+          channel: ${{ steps.manifest.outputs.flutter_channel }}
+          cache: true
+
+      - name: Set up Rust toolchain
+        shell: pwsh
+        run: |
+          $toolchain = '${{ steps.manifest.outputs.rust_toolchain }}'
+          rustup toolchain install $toolchain --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default $toolchain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if ('${{ inputs.task }}'.EndsWith('android')) {
+            foreach ($target in @(
+              'aarch64-linux-android',
+              'armv7-linux-androideabi',
+              'i686-linux-android',
+              'x86_64-linux-android'
+            )) {
+              rustup target add --toolchain $toolchain $target
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+
+      - name: Install Android 37 toolchain
+        if: ${{ endsWith(inputs.task, 'android') }}
+        shell: pwsh
+        run: |
+          $sdkmanager = (Get-Command sdkmanager.bat -ErrorAction SilentlyContinue).Source
+          if (-not $sdkmanager) {
+            $candidate = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
+            if (Test-Path $candidate) { $sdkmanager = $candidate }
+          }
+          if (-not $sdkmanager) { throw 'sdkmanager.bat not found on windows-latest.' }
+
+          $platformPackage = '${{ steps.manifest.outputs.android_platform_package }}'
+          $buildTools = '${{ steps.manifest.outputs.android_build_tools }}'
+          $ndkPackage = '${{ steps.manifest.outputs.android_ndk_package }}'
+          $cmd = 'echo y|"' + $sdkmanager + '" --channel=3 "' + $platformPackage + '" "build-tools;' + $buildTools + '" "' + $ndkPackage + '"'
+          cmd.exe /d /c $cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install Flutter Rust Bridge codegen
+        shell: pwsh
+        run: |
+          $version = '${{ steps.manifest.outputs.frb_version }}'
+          cargo install flutter_rust_bridge_codegen --version $version --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter_rust_bridge_codegen --version
+
+      - name: Set up Go for age delivery
+        if: ${{ startsWith(inputs.task, 'deliver-') }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.5'
+          cache: false
+
+      - name: Install age 1.2.1
+        if: ${{ startsWith(inputs.task, 'deliver-') }}
+        shell: pwsh
+        run: python scripts/private-ci/install_age.py
+
+      - name: Run private Flutter + Rust task with captured diagnostics
+        id: private
+        shell: pwsh
+        env:
+          PUB_HOSTED_URL: https://pub.flutter-io.cn
+          FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+        run: >-
+          python scripts/private-ci/run_flutter_rust.py
+          --source-dir "${{ steps.source.outputs.source_dir }}"
+          --manifest "${{ steps.adapter.outputs.manifest_path }}"
+          --task "${{ inputs.task }}"
+          --sha "${{ steps.source.outputs.sha }}"
+          --result "${{ runner.temp }}/buildfarm-result.json"
+          --diagnostics "${{ runner.temp }}/buildfarm-diagnostics"
+          --age-recipient "${{ steps.adapter.outputs.age_recipient }}"
+
+      - name: Upload age-encrypted delivery artifact
+        id: upload
+        if: ${{ startsWith(inputs.task, 'deliver-') && steps.private.outputs.success == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.project_id }}-${{ steps.source.outputs.sha }}-${{ inputs.task }}
+          path: ${{ steps.private.outputs.encrypted_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Create fresh result token
+        id: result-token
+        if: ${{ always() && steps.source.outputs.sha != '' && steps.private.outputs.success != '' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ inputs.github_app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ steps.adapter.outputs.source_owner }}
+          repositories: ${{ steps.adapter.outputs.source_name }}
+          permission-checks: write
+          skip-token-revoke: true
+
+      - name: Write sanitized result to private commit Check Run
+        id: check-write
+        if: ${{ always() && steps.result-token.outputs.token != '' }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          BUILDFARM_RESULT_TOKEN: ${{ steps.result-token.outputs.token }}
+        run: >-
+          python scripts/private-ci/post_private_check.py
+          --repo "${{ steps.adapter.outputs.source_repo }}"
+          --sha "${{ steps.source.outputs.sha }}"
+          --task "${{ inputs.task }}"
+          --result "${{ runner.temp }}/buildfarm-result.json"
+          --diagnostics "${{ runner.temp }}/buildfarm-diagnostics"
+          --upload-outcome "${{ steps.upload.outcome }}"
+
+      - name: Finalize task result
+        if: ${{ always() && steps.private.outputs.success != '' }}
+        shell: pwsh
+        run: >-
+          python scripts/private-ci/finalize.py
+          --result "${{ runner.temp }}/buildfarm-result.json"
+          --delivery-upload "${{ steps.upload.outcome }}"
+          --check-write "${{ steps.check-write.outcome }}"
+
+      - name: Remove private source and runner-local diagnostics
+        if: ${{ always() }}
+        shell: pwsh
+        run: >-
+          python scripts/private-ci/cleanup.py
+          --source "${{ runner.temp }}/buildfarm-private-source"
+          --encrypted "${{ steps.private.outputs.encrypted_path }}"
+          --diagnostics "${{ runner.temp }}/buildfarm-diagnostics"
+          --result "${{ runner.temp }}/buildfarm-result.json"

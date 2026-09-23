@@ -1,41 +1,56 @@
 # MintLink on BuildFarm
 
-Source repository: `AloiceC/MintLink` (private)
+Source repository: `AloiceC/MintLink` (private).
 
-BuildFarm must not mirror MintLink source. The private repository remains the source of truth.
+MintLink uses the shared BuildFarm v1 private-source lifecycle. BuildFarm never mirrors MintLink source or Git history. The private repository remains authoritative for source, dependencies, Android overlays, Rust/FRB settings, project status, and build lessons.
 
-## BuildFarm v1 requirement
+## Handoff
 
-MintLink must use the same private-project contract as every other BuildFarm v1 integration:
+Normal input is the private ref `ci/buildfarm`. BuildFarm resolves it to an exact commit SHA, downloads that SHA through the GitHub archive API, and revokes the source token before any private build command runs.
 
-- private handoff ref: `ci/buildfarm`;
-- runtime resolution to an exact commit SHA;
-- a dedicated MintLink GitHub App with only `Metadata: read + Contents: read + Checks: write`;
-- GitHub archive API download of the exact SHA into the hosted runner temporary workspace;
-- no `actions/checkout` against the private source repository and no Git history copy;
-- immediate source-token revocation after source acquisition;
-- private compiler stdout/stderr kept out of public BuildFarm logs;
-- sanitized private failure diagnostics written back as Check Runs using a fresh short-lived token;
-- normal private binaries discarded after verification;
-- owner test packages encrypted with the owner's age public recipient before public artifact upload;
-- no self-hosted runner delivery path.
+The manual entry workflow is `.github/workflows/mintlink.yml`.
 
-The older fine-grained-PAT / private-delivery proposal is superseded by BuildFarm v1 and must not be implemented.
+## GitHub App
 
-## Current toolchain target
+Expected BuildFarm configuration:
 
-The previous local bootstrap exposed a real Android toolchain incompatibility: Android API 37.0 requires a newer Android Gradle Plugin than the older Flutter-era project was using.
+- repository variable `MINTLINK_CLIENT_ID`
+- repository secret `MINTLINK_PRIVATE_KEY`
 
-The public toolchain smoke currently validates this public-safe baseline:
+The dedicated GitHub App is installed only on `AloiceC/MintLink` and requires:
 
-- Flutter stable: 3.47.5
-- JDK: 17
-- Android API: 37.0
-- AGP: 9.1.1 minimum for API 37.0
-- Gradle: 9.3.1 for AGP 9.1.1
+- Metadata: read
+- Contents: read
+- Checks: write
 
-Rust / FRB / Drift versions and the final private build manifest remain project-owned decisions in the MintLink repository. See its private `docs/CI_BUILD_LESSONS.md` before changing the toolchain.
+No Contents write, Actions write, or Administration permission is required.
 
-## Mirror policy
+## Execution layer
 
-Use trusted/verifiable mirrors where appropriate and keep an official fallback where practical. Current approved examples include CFUG Flutter/Pub mirrors and a probed Aliyun Gradle distribution mirror. Android SDK packages remain on Google's official source unless an equivalently trustworthy and verifiable mirror is deliberately approved.
+MintLink uses `private-flutter-rust-v1.yml`, a thin execution layer over the common BuildFarm v1 security scripts.
+
+It adds only the project class capabilities that ordinary Flutter v1 does not need:
+
+- pinned Rust toolchain with rustfmt/clippy/test;
+- Flutter Rust Bridge code generation before Dart `build_runner`;
+- project-owned Android overlays;
+- explicit Android 37.0 SDK/NDK package installation for Android tasks;
+- project-owned AGP/Gradle pins used to patch generated Flutter scaffolding;
+- Windows and Android build/delivery tasks.
+
+The private `ci/buildfarm.toml` is the source of truth for these versions and paths.
+
+## Tasks
+
+- `check`: Rust validation → Flutter scaffolding → `pub get` → FRB codegen → Dart build_runner → analyze → tests.
+- `build-android`: requires green `BuildFarm / check` for the same SHA; builds an Android Release APK, records safe size/hash metadata, then discards the raw APK.
+- `build-windows`: same gate; builds Windows Release, records safe size/hash metadata, then discards the raw package.
+- `deliver-android` / `deliver-windows`: same build path, but only the age-encrypted ciphertext is uploaded.
+
+`age_recipient` remains blank until the owner configures the public recipient. The corresponding private key stays local.
+
+## Android 37
+
+MintLink intentionally tests Android 17 local-network permission behavior.
+
+The project manifest currently targets Flutter 3.47.5, JDK 17, Android `platforms;android-37.0`, Build Tools 37.0.0, NDK 28.2.13676358, AGP 9.1.1, and Gradle 9.3.1. These values are copied here only as onboarding context; the private manifest is authoritative.

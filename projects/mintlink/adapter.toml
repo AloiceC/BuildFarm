@@ -1,0 +1,9 @@
+schema_version = 1
+project_id = "mintlink"
+source_repo = "AloiceC/MintLink"
+handoff_ref = "ci/buildfarm"
+manifest_path = "ci/buildfarm.toml"
+
+# Public-safe delivery metadata. Fill before the first delivery build.
+# The age private key never enters BuildFarm.
+age_recipient = ""
