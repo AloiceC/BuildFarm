@@ -76,7 +76,7 @@ jobs:
           --expected-project "${{ inputs.project_id }}"
 
       - name: Require age recipient for delivery tasks
-        if: ${{ startsWith(inputs.task, 'deliver-') && steps.manifest.outputs.delivery_ready != 'true' }}
+        if: ${{ startsWith(inputs.task, 'deliver-') && steps.adapter.outputs.delivery_ready != 'true' }}
         run: python -c "import sys; print('DELIVERY_CONFIG status=FAIL reason=age-recipient-unset'); sys.exit(1)"
 
       - name: Select trusted Flutter mirrors
@@ -124,6 +124,7 @@ jobs:
           --sha "${{ steps.source.outputs.sha }}"
           --result "${{ runner.temp }}/buildfarm-result.json"
           --diagnostics "${{ runner.temp }}/buildfarm-diagnostics"
+          --age-recipient "${{ steps.adapter.outputs.age_recipient }}"
 
       - name: Upload age-encrypted delivery artifact
         id: upload
