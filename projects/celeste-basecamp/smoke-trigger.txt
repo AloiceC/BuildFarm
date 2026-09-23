@@ -1,0 +1,2 @@
+Celeste Basecamp BuildFarm smoke trigger.
+Update this file only when a fresh hosted check run is intentionally needed.
