@@ -43,7 +43,7 @@ def request_json(url: str, token: str) -> dict:
         return json.load(response)
 
 
-def request_bytes(url: str, token: str) -> bytes:
+def download_archive(url: str, token: str, destination: Path) -> None:
     opener = urllib.request.build_opener(SafeRedirectHandler())
     req = urllib.request.Request(
         url,
@@ -54,8 +54,12 @@ def request_bytes(url: str, token: str) -> bytes:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with opener.open(req, timeout=90) as response:
-        return response.read()
+    with opener.open(req, timeout=90) as response, destination.open("wb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            handle.write(chunk)
 
 
 def revoke(token: str) -> None:
@@ -73,7 +77,6 @@ def revoke(token: str) -> None:
         with urllib.request.urlopen(req, timeout=20):
             pass
     except Exception:
-        # Token expiry/revocation must never leak a traceback or token context publicly.
         pass
 
 
@@ -146,6 +149,7 @@ def main() -> int:
         print("SOURCE status=FAIL reason=missing-token")
         return 1
 
+    token_revoked = False
     tmp_zip: Path | None = None
     try:
         if args.handoff_ref != "ci/buildfarm":
@@ -157,18 +161,22 @@ def main() -> int:
         if args.task != "check":
             require_green_check(args.repo, sha, token, "BuildFarm / check")
 
-        archive = request_bytes(f"{API}/repos/{args.repo}/zipball/{sha}", token)
         fd, raw_path = tempfile.mkstemp(prefix="buildfarm-source-", suffix=".zip")
         os.close(fd)
         tmp_zip = Path(raw_path)
-        tmp_zip.write_bytes(archive)
+        download_archive(f"{API}/repos/{args.repo}/zipball/{sha}", token, tmp_zip)
+
+        # BuildFarm v1 source credentials end here. Extraction/build runs credential-free.
+        revoke(token)
+        token_revoked = True
+        token = ""
 
         dest = Path(args.dest)
         if dest.exists():
             shutil.rmtree(dest)
         source_root = safe_extract(tmp_zip, dest)
         write_output("source_dir", str(source_root))
-        print(f"SOURCE sha={sha} status=PASS")
+        print(f"SOURCE sha={sha} status=PASS token=released")
         return 0
     except (ValueError, OSError, urllib.error.URLError, zipfile.BadZipFile):
         print("SOURCE status=FAIL")
@@ -179,7 +187,8 @@ def main() -> int:
                 tmp_zip.unlink(missing_ok=True)
             except OSError:
                 pass
-        revoke(token)
+        if not token_revoked and token:
+            revoke(token)
 
 
 if __name__ == "__main__":
