@@ -187,6 +187,7 @@ jobs:
           --sha "${{ steps.source.outputs.sha }}"
           --task "${{ inputs.task }}"
           --result "${{ runner.temp }}/buildfarm-result.json"
+          --diagnostics "${{ runner.temp }}/buildfarm-diagnostics"
           --upload-outcome "${{ steps.upload.outcome }}"
 
       - name: Finalize task result
