@@ -43,6 +43,8 @@ Sanitized failure diagnostics are written back to the corresponding private comm
 
 Normal Windows/Android build verification discards the raw package after hashing it.
 
-`deliver-windows` and `deliver-android` require an age public recipient in the private project's `ci/buildfarm.toml`. Only the `.age` ciphertext is uploaded as a BuildFarm artifact. The age private key stays local to the project owner.
+`deliver-windows` and `deliver-android` read the owner's age public recipient from the public-safe `adapter.toml`. Only the `.age` ciphertext is uploaded as a BuildFarm artifact. The age private key stays local to the project owner.
+
+Keeping the public recipient in the adapter means rotating it does not move the private `ci/buildfarm` source handoff or invalidate an already-green `BuildFarm / check` on that SHA.
 
 Project-specific toolchain versions and compatibility history are intentionally not duplicated here. Read them from the private project's manifest/docs after source handoff.
