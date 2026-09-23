@@ -1,0 +1,5 @@
+schema_version = 1
+project_id = "pixiv-lite-app"
+source_repo = "AloiceC/pixiv-lite-app"
+handoff_ref = "ci/buildfarm"
+manifest_path = "ci/buildfarm.toml"
