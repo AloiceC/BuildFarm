@@ -1,4 +1,4 @@
-name: Pixiv Lite App
+name: Pixiv Lite App · Advanced
 
 on:
   workflow_dispatch:
