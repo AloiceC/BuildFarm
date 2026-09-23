@@ -282,6 +282,11 @@ def main() -> int:
         else:
             raise RuntimeError("unsupported BuildFarm task")
 
+        # Platform-independent Rust validation belongs to the exact-SHA check task.
+        # Platform build/delivery tasks already require that private check to be green.
+        if task != "check":
+            rust = {**rust, "fmt": False, "clippy": False, "test": False}
+
         packages = [str(x) for x in rust["packages"]]
         package_args = cargo_packages(packages)
 
