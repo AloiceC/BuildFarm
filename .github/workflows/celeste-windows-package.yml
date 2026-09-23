@@ -1,0 +1,34 @@
+name: Celeste Basecamp · Windows Test Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buildfarm-celeste-basecamp-windows-package
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check private source
+    uses: ./.github/workflows/private-tauri-v1.yml
+    with:
+      project_id: celeste-basecamp
+      task: check
+      github_app_client_id: ${{ vars.CELESTE_BASECAMP_CLIENT_ID }}
+    secrets:
+      app_private_key: ${{ secrets.CELESTE_BASECAMP_PRIVATE_KEY }}
+
+  deliver:
+    name: Build and deliver Windows package
+    needs: check
+    uses: ./.github/workflows/private-tauri-v1.yml
+    with:
+      project_id: celeste-basecamp
+      task: deliver-windows
+      source_sha: ${{ needs.check.outputs.source_sha }}
+      github_app_client_id: ${{ vars.CELESTE_BASECAMP_CLIENT_ID }}
+    secrets:
+      app_private_key: ${{ secrets.CELESTE_BASECAMP_PRIVATE_KEY }}
