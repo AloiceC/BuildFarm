@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -16,6 +17,10 @@ import zipfile
 API = "https://api.github.com"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 SAFE_PERMISSION_RE = re.compile(r"[^A-Za-z0-9_=,; ._-]")
+
+
+class GitSourceError(Exception):
+    pass
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -61,6 +66,91 @@ def download_archive(url: str, token: str, destination: Path) -> None:
             if not chunk:
                 break
             handle.write(chunk)
+
+
+def run_git(args: list[str], cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise GitSourceError from exc
+
+
+def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> Path:
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    fd, askpass_raw = tempfile.mkstemp(prefix="buildfarm-askpass-", suffix=".py")
+    os.close(fd)
+    askpass = Path(askpass_raw)
+    askpass.write_text(
+        "import os, sys\n"
+        "prompt = sys.argv[1].lower() if len(sys.argv) > 1 else ''\n"
+        "if 'username' in prompt:\n"
+        "    print(os.environ.get('BUILDFARM_GIT_USERNAME', 'buildfarm'))\n"
+        "else:\n"
+        "    print(os.environ.get('BUILDFARM_GIT_TOKEN', ''))\n",
+        encoding="utf-8",
+    )
+    try:
+        askpass.chmod(0o700)
+    except OSError:
+        pass
+
+    git_env = os.environ.copy()
+    git_env.update(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": str(askpass),
+            "BUILDFARM_GIT_USERNAME": "buildfarm",
+            "BUILDFARM_GIT_TOKEN": token,
+        }
+    )
+
+    try:
+        result = run_git(["init", "--quiet"], destination, git_env)
+        if result.returncode != 0:
+            raise GitSourceError
+
+        remote = f"https://github.com/{repo}.git"
+        result = run_git(
+            ["fetch", "--quiet", "--no-tags", "--depth=1", remote, sha],
+            destination,
+            git_env,
+        )
+        if result.returncode != 0:
+            raise GitSourceError
+
+        result = run_git(["checkout", "--quiet", "--detach", "FETCH_HEAD"], destination, git_env)
+        if result.returncode != 0:
+            raise GitSourceError
+
+        result = run_git(["rev-parse", "HEAD"], destination, git_env)
+        resolved = result.stdout.strip().lower() if result.returncode == 0 else ""
+        if resolved != sha.lower():
+            raise GitSourceError
+
+        git_dir = destination / ".git"
+        if git_dir.exists():
+            shutil.rmtree(git_dir)
+        return destination
+    finally:
+        git_env["BUILDFARM_GIT_TOKEN"] = ""
+        try:
+            askpass.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def revoke(token: str) -> None:
@@ -202,10 +292,6 @@ def main() -> int:
         if args.handoff_ref != "ci/buildfarm":
             raise ValueError("BuildFarm v1 handoff must be ci/buildfarm")
 
-        # For the PAT backend, an explicit exact SHA is already reproducible input.
-        # The archive request below validates that the SHA exists in the allowed repo,
-        # so avoid an otherwise redundant commit API lookup. Keep GitHub App behavior
-        # unchanged for existing projects such as Celeste Basecamp.
         if args.token_kind == "pat" and args.source_sha.strip():
             if not SHA_RE.fullmatch(args.source_sha.strip()):
                 raise ValueError("explicit source SHA must be a full 40-character SHA")
@@ -222,15 +308,23 @@ def main() -> int:
             else:
                 require_green_check(args.repo, sha, token, "BuildFarm / check")
 
+        if args.token_kind == "pat":
+            stage = "git-fetch"
+            source_root = fetch_exact_with_git(args.repo, sha, token, Path(args.dest))
+            token = ""
+            os.environ.pop("BUILDFARM_SOURCE_TOKEN", None)
+            write_output("source_dir", str(source_root))
+            print(f"SOURCE sha={sha} status=PASS credential=step-scoped transport=git")
+            return 0
+
         fd, raw_path = tempfile.mkstemp(prefix="buildfarm-source-", suffix=".zip")
         os.close(fd)
         tmp_zip = Path(raw_path)
         stage = "download-archive"
         download_archive(f"{API}/repos/{args.repo}/zipball/{sha}", token, tmp_zip)
 
-        if args.token_kind == "github-app":
-            revoke(token)
-            token_revoked = True
+        revoke(token)
+        token_revoked = True
         token = ""
         os.environ.pop("BUILDFARM_SOURCE_TOKEN", None)
 
@@ -240,11 +334,11 @@ def main() -> int:
             shutil.rmtree(dest)
         source_root = safe_extract(tmp_zip, dest)
         write_output("source_dir", str(source_root))
-        if args.token_kind == "github-app":
-            print(f"SOURCE sha={sha} status=PASS token=released")
-        else:
-            print(f"SOURCE sha={sha} status=PASS credential=step-scoped")
+        print(f"SOURCE sha={sha} status=PASS token=released")
         return 0
+    except GitSourceError:
+        print(f"SOURCE status=FAIL stage={stage} reason=git-auth-or-source")
+        return 1
     except urllib.error.HTTPError as exc:
         reason, accepted = classify_http_error(exc)
         suffix = f" accepted={accepted}" if accepted else ""
