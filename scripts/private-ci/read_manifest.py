@@ -48,7 +48,6 @@ def main() -> int:
         android = require_table(data, "android")
         windows = require_table(data, "windows")
         dependency = require_table(data, "dependency")
-        delivery = require_table(data, "delivery")
 
         generated = flutter.get("generated_platforms") or []
         if not isinstance(generated, list) or not generated:
@@ -58,7 +57,6 @@ def main() -> int:
         if lock_required and not (source / "pubspec.lock").is_file():
             raise ValueError("required project lockfile is missing")
 
-        recipient = str(delivery.get("age_recipient", "")).strip()
         outputs = {
             "flutter_version": str(flutter["version"]),
             "flutter_channel": str(flutter.get("channel", "stable")),
@@ -75,7 +73,6 @@ def main() -> int:
             "android_output": str(android["output"]),
             "windows_build_mode": str(windows.get("build_mode", "release")),
             "windows_output_dir": str(windows["output_dir"]),
-            "delivery_ready": str(bool(recipient)).lower(),
         }
 
         for name, value in outputs.items():
