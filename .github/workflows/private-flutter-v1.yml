@@ -29,7 +29,7 @@ concurrency:
 jobs:
   run:
     name: ${{ inputs.project_id }} · ${{ inputs.task }}
-    runs-on: ${{ (endsWith(inputs.task, 'windows')) && 'windows-latest' || 'ubuntu-latest' }}
+    runs-on: ${{ endsWith(inputs.task, 'windows') && 'windows-latest' || 'ubuntu-latest' }}
     timeout-minutes: 60
 
     steps:
@@ -141,7 +141,6 @@ jobs:
           owner: ${{ steps.adapter.outputs.source_owner }}
           repositories: ${{ steps.adapter.outputs.source_name }}
           permission-checks: write
-          permission-contents: read
           skip-token-revoke: true
 
       - name: Write sanitized result to private commit Check Run
