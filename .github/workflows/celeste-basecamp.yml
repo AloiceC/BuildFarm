@@ -1,0 +1,33 @@
+name: Celeste Basecamp
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'BuildFarm task'
+        required: true
+        type: choice
+        default: check
+        options:
+          - check
+          - build-windows
+          - deliver-windows
+      source_sha:
+        description: 'Optional exact 40-character commit SHA. Leave blank to use ci/buildfarm.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  buildfarm:
+    uses: ./.github/workflows/private-tauri-v1.yml
+    with:
+      project_id: celeste-basecamp
+      task: ${{ inputs.task }}
+      source_sha: ${{ inputs.source_sha }}
+      github_app_client_id: ${{ vars.CELESTE_BASECAMP_CLIENT_ID }}
+    secrets:
+      app_private_key: ${{ secrets.CELESTE_BASECAMP_PRIVATE_KEY }}
