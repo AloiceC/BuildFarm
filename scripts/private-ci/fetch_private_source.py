@@ -103,15 +103,11 @@ def classify_git_failure(stderr: str) -> str:
     return "git-failure"
 
 
-def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> Path:
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-
-    fd, askpass_raw = tempfile.mkstemp(prefix="buildfarm-askpass-", suffix=".py")
+def create_askpass() -> tuple[Path, list[Path]]:
+    fd, helper_raw = tempfile.mkstemp(prefix="buildfarm-askpass-", suffix=".py")
     os.close(fd)
-    askpass = Path(askpass_raw)
-    askpass.write_text(
+    helper = Path(helper_raw)
+    helper.write_text(
         "#!/usr/bin/env python3\n"
         "import os, sys\n"
         "prompt = sys.argv[1].lower() if len(sys.argv) > 1 else ''\n"
@@ -121,7 +117,28 @@ def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> 
         "    print(os.environ.get('BUILDFARM_GIT_TOKEN', ''))\n",
         encoding="utf-8",
     )
-    askpass.chmod(0o700)
+
+    if os.name != "nt":
+        helper.chmod(0o700)
+        return helper, [helper]
+
+    fd, launcher_raw = tempfile.mkstemp(prefix="buildfarm-askpass-", suffix=".cmd")
+    os.close(fd)
+    launcher = Path(launcher_raw)
+    launcher.write_text(
+        "@echo off\r\n"
+        f'"{sys.executable}" "{helper}" %*\r\n',
+        encoding="utf-8",
+    )
+    return launcher, [launcher, helper]
+
+
+def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> Path:
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    askpass, askpass_files = create_askpass()
 
     git_env = os.environ.copy()
     git_env.update(
@@ -162,10 +179,11 @@ def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> 
         return destination
     finally:
         git_env["BUILDFARM_GIT_TOKEN"] = ""
-        try:
-            askpass.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for path in askpass_files:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def revoke(token: str) -> None:
