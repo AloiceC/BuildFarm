@@ -194,8 +194,10 @@ def main() -> int:
             shutil.rmtree(dest)
         source_root = safe_extract(tmp_zip, dest)
         write_output("source_dir", str(source_root))
-        release_mode = "revoked" if args.token_kind == "github-app" else "step-scoped"
-        print(f"SOURCE sha={sha} status=PASS credential={release_mode}")
+        if args.token_kind == "github-app":
+            print(f"SOURCE sha={sha} status=PASS token=released")
+        else:
+            print(f"SOURCE sha={sha} status=PASS credential=step-scoped")
         return 0
     except (ValueError, OSError, urllib.error.URLError, zipfile.BadZipFile):
         print("SOURCE status=FAIL")
