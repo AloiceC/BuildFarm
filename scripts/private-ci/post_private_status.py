@@ -11,6 +11,8 @@ import urllib.request
 API = "https://api.github.com"
 ISSUE_COUNT_RE = re.compile(r"\b(\d+)\s+(?:issue|issues)\s+found\b", re.IGNORECASE)
 LOCATION_RE = re.compile(r"^(.*?):(\d+)(?::\d+)?$")
+RUST_LOCATION_RE = re.compile(r"^-->\s+(.*?):(\d+)(?::\d+)?$")
+CLIPPY_LINT_RE = re.compile(r"clippy::([a-zA-Z0-9_-]+)")
 
 
 def post_json(url: str, token: str, body: dict) -> dict:
@@ -36,12 +38,43 @@ def status_context(task: str) -> str:
 
 
 def compact_location(location: str) -> str:
-    normalized = location.replace("<src>/", "")
+    normalized = location.replace("\\", "/").replace("<src>/", "")
     match = LOCATION_RE.match(normalized)
     if not match:
         return Path(normalized).name
     path, line = match.groups()
     return f"{Path(path).name}:{line}"
+
+
+def compact_clippy(lines: list[str]) -> str:
+    error_index = next(
+        (index for index, line in enumerate(lines) if line.lower().startswith("error:")),
+        None,
+    )
+    if error_index is None:
+        return ""
+
+    error_message = lines[error_index].split(":", 1)[1].strip()
+    location = ""
+    lint = ""
+
+    for line in lines[error_index + 1 :]:
+        if not location:
+            match = RUST_LOCATION_RE.match(line)
+            if match:
+                location = compact_location(f"{match.group(1)}:{match.group(2)}")
+        if not lint:
+            match = CLIPPY_LINT_RE.search(line)
+            if match:
+                lint = match.group(1).replace("-", "_")
+        if location and lint:
+            break
+
+    if lint and location:
+        return f"{lint}@{location}"
+    if location:
+        return f"{error_message[:70]}@{location}"
+    return error_message[:100]
 
 
 def compact_diagnostic(diagnostics_dir: str, failed_stage: str | None) -> str:
@@ -86,7 +119,22 @@ def compact_diagnostic(diagnostics_dir: str, failed_stage: str | None) -> str:
         if count:
             return prefix
 
-    ignored_prefixes = ("analyzing ", "no sanitized diagnostic text")
+    if failed_stage == "clippy":
+        compact = compact_clippy(lines)
+        if compact:
+            return compact
+
+    ignored_prefixes = (
+        "analyzing ",
+        "compiling ",
+        "checking ",
+        "downloading ",
+        "downloaded ",
+        "updating ",
+        "locking ",
+        "finished ",
+        "no sanitized diagnostic text",
+    )
     for line in lines:
         if not line.lower().startswith(ignored_prefixes):
             return line[:100]
