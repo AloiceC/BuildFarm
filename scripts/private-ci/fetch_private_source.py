@@ -145,11 +145,16 @@ def resolve_sha_with_git(repo: str, ref: str, token: str) -> str:
     remote = f"https://github.com/{repo}.git"
     remote_ref = ref if ref.startswith("refs/") else f"refs/heads/{ref}"
     try:
-        result = run_git(
-            ["ls-remote", "--exit-code", remote, remote_ref],
-            Path.cwd(),
-            git_env,
-        )
+        # Do not run ls-remote inside the checked-out BuildFarm repository.
+        # actions/checkout persists its own GitHub Authorization header in that
+        # repository's local .git/config, which would otherwise be combined with
+        # the private-source PAT header injected above.
+        with tempfile.TemporaryDirectory(prefix="buildfarm-ls-remote-") as raw_temp:
+            result = run_git(
+                ["ls-remote", "--exit-code", remote, remote_ref],
+                Path(raw_temp),
+                git_env,
+            )
         if result.returncode != 0:
             raise GitSourceError(classify_git_failure(result.stderr))
         first_line = next((line for line in result.stdout.splitlines() if line.strip()), "")
