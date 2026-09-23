@@ -165,14 +165,17 @@ def main() -> int:
 
     token_revoked = False
     tmp_zip: Path | None = None
+    stage = "validate-input"
     try:
         if args.handoff_ref != "ci/buildfarm":
             raise ValueError("BuildFarm v1 handoff must be ci/buildfarm")
 
+        stage = "resolve-sha"
         sha = resolve_sha(args.repo, args.handoff_ref, args.source_sha, token)
         write_output("sha", sha)
 
         if args.task != "check":
+            stage = "validate-prerequisite"
             if args.validation_backend == "commit-status":
                 require_green_status(args.repo, sha, token, "BuildFarm / check")
             else:
@@ -181,6 +184,7 @@ def main() -> int:
         fd, raw_path = tempfile.mkstemp(prefix="buildfarm-source-", suffix=".zip")
         os.close(fd)
         tmp_zip = Path(raw_path)
+        stage = "download-archive"
         download_archive(f"{API}/repos/{args.repo}/zipball/{sha}", token, tmp_zip)
 
         if args.token_kind == "github-app":
@@ -189,6 +193,7 @@ def main() -> int:
         token = ""
         os.environ.pop("BUILDFARM_SOURCE_TOKEN", None)
 
+        stage = "extract-archive"
         dest = Path(args.dest)
         if dest.exists():
             shutil.rmtree(dest)
@@ -199,8 +204,14 @@ def main() -> int:
         else:
             print(f"SOURCE sha={sha} status=PASS credential=step-scoped")
         return 0
-    except (ValueError, OSError, urllib.error.URLError, zipfile.BadZipFile):
-        print("SOURCE status=FAIL")
+    except urllib.error.HTTPError as exc:
+        print(f"SOURCE status=FAIL stage={stage} http={exc.code}")
+        return 1
+    except urllib.error.URLError:
+        print(f"SOURCE status=FAIL stage={stage} reason=network")
+        return 1
+    except (ValueError, OSError, zipfile.BadZipFile):
+        print(f"SOURCE status=FAIL stage={stage} reason=local")
         return 1
     finally:
         if tmp_zip is not None:
