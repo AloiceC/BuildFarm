@@ -20,7 +20,9 @@ SAFE_PERMISSION_RE = re.compile(r"[^A-Za-z0-9_=,; ._-]")
 
 
 class GitSourceError(Exception):
-    pass
+    def __init__(self, reason: str = "git-failure") -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -83,7 +85,22 @@ def run_git(args: list[str], cwd: Path, env: dict[str, str]) -> subprocess.Compl
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise GitSourceError from exc
+        raise GitSourceError("git-launch") from exc
+
+
+def classify_git_failure(stderr: str) -> str:
+    text = stderr.lower()
+    if "cannot run" in text and "askpass" in text:
+        return "askpass-launch"
+    if "authentication failed" in text or "could not read username" in text:
+        return "auth"
+    if "repository not found" in text or "not found" in text:
+        return "source-not-found"
+    if "couldn't find remote ref" in text or "not our ref" in text:
+        return "source-sha"
+    if "could not resolve host" in text or "failed to connect" in text:
+        return "network"
+    return "git-failure"
 
 
 def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> Path:
@@ -95,6 +112,7 @@ def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> 
     os.close(fd)
     askpass = Path(askpass_raw)
     askpass.write_text(
+        "#!/usr/bin/env python3\n"
         "import os, sys\n"
         "prompt = sys.argv[1].lower() if len(sys.argv) > 1 else ''\n"
         "if 'username' in prompt:\n"
@@ -103,10 +121,7 @@ def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> 
         "    print(os.environ.get('BUILDFARM_GIT_TOKEN', ''))\n",
         encoding="utf-8",
     )
-    try:
-        askpass.chmod(0o700)
-    except OSError:
-        pass
+    askpass.chmod(0o700)
 
     git_env = os.environ.copy()
     git_env.update(
@@ -121,7 +136,7 @@ def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> 
     try:
         result = run_git(["init", "--quiet"], destination, git_env)
         if result.returncode != 0:
-            raise GitSourceError
+            raise GitSourceError(classify_git_failure(result.stderr))
 
         remote = f"https://github.com/{repo}.git"
         result = run_git(
@@ -130,16 +145,16 @@ def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> 
             git_env,
         )
         if result.returncode != 0:
-            raise GitSourceError
+            raise GitSourceError(classify_git_failure(result.stderr))
 
         result = run_git(["checkout", "--quiet", "--detach", "FETCH_HEAD"], destination, git_env)
         if result.returncode != 0:
-            raise GitSourceError
+            raise GitSourceError(classify_git_failure(result.stderr))
 
         result = run_git(["rev-parse", "HEAD"], destination, git_env)
         resolved = result.stdout.strip().lower() if result.returncode == 0 else ""
         if resolved != sha.lower():
-            raise GitSourceError
+            raise GitSourceError("sha-mismatch")
 
         git_dir = destination / ".git"
         if git_dir.exists():
@@ -336,8 +351,8 @@ def main() -> int:
         write_output("source_dir", str(source_root))
         print(f"SOURCE sha={sha} status=PASS token=released")
         return 0
-    except GitSourceError:
-        print(f"SOURCE status=FAIL stage={stage} reason=git-auth-or-source")
+    except GitSourceError as exc:
+        print(f"SOURCE status=FAIL stage={stage} reason={exc.reason}")
         return 1
     except urllib.error.HTTPError as exc:
         reason, accepted = classify_http_error(exc)
