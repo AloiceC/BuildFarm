@@ -10,6 +10,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--result", required=True)
     parser.add_argument("--delivery-upload", default="skipped")
+    parser.add_argument("--check-write", default="success")
     args = parser.parse_args()
 
     try:
@@ -17,6 +18,8 @@ def main() -> int:
         success = bool(result.get("success"))
         task = str(result.get("task", ""))
         if task.startswith("deliver-") and args.delivery_upload != "success":
+            success = False
+        if args.check_write != "success":
             success = False
     except Exception:
         success = False
