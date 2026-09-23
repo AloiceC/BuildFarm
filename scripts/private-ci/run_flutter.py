@@ -193,6 +193,7 @@ def main() -> int:
     parser.add_argument("--sha", required=True)
     parser.add_argument("--result", required=True)
     parser.add_argument("--diagnostics", required=True)
+    parser.add_argument("--age-recipient", default="")
     args = parser.parse_args()
 
     source = Path(args.source_dir).resolve()
@@ -227,7 +228,6 @@ def main() -> int:
         check = manifest["check"]
         android = manifest["android"]
         windows = manifest["windows"]
-        delivery = manifest["delivery"]
 
         if task == "check":
             platforms = list(flutter["generated_platforms"])
@@ -322,7 +322,7 @@ def main() -> int:
             )
 
             if task.startswith("deliver-"):
-                recipient = str(delivery.get("age_recipient", "")).strip()
+                recipient = args.age_recipient.strip()
                 if not recipient:
                     raise RuntimeError("age recipient is not configured")
                 age = shutil.which("age") or shutil.which("age.exe")
