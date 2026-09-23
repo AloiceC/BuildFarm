@@ -13,9 +13,10 @@ on:
         required: false
         type: string
         default: ''
-    secrets:
-      app_id:
+      github_app_client_id:
         required: true
+        type: string
+    secrets:
       app_private_key:
         required: true
 
@@ -44,9 +45,9 @@ jobs:
 
       - name: Create short-lived private source token
         id: source-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.app_id }}
+          client-id: ${{ inputs.github_app_client_id }}
           private-key: ${{ secrets.app_private_key }}
           owner: ${{ steps.adapter.outputs.source_owner }}
           repositories: ${{ steps.adapter.outputs.source_name }}
@@ -138,9 +139,9 @@ jobs:
       - name: Create fresh result token
         id: result-token
         if: ${{ always() && steps.source.outputs.sha != '' && steps.private.outputs.success != '' }}
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.app_id }}
+          client-id: ${{ inputs.github_app_client_id }}
           private-key: ${{ secrets.app_private_key }}
           owner: ${{ steps.adapter.outputs.source_owner }}
           repositories: ${{ steps.adapter.outputs.source_name }}
