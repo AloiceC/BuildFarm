@@ -14,30 +14,30 @@ ci/buildfarm
 
 BuildFarm resolves that ref to an exact commit SHA before source download. An explicit full SHA may be supplied for reproducibility/debugging.
 
-## GitHub App
+## Fine-grained PAT authentication
 
-Pixiv Lite App uses a dedicated project-scoped GitHub App.
+Pixiv Lite App uses a project-scoped fine-grained personal access token because GitHub App installation could not be completed reliably for this account.
 
-Required repository permissions:
+The token must be restricted to `AloiceC/pixiv-lite-app` only and needs only:
 
-- Metadata: read
 - Contents: read
-- Checks: write
+- Commit statuses: read and write
 
 BuildFarm configuration expected by `.github/workflows/pixiv-lite-app.yml`:
 
-- repository variable `PIXIV_LITE_APP_CLIENT_ID`
-- repository secret `PIXIV_LITE_APP_PRIVATE_KEY`
+- repository secret `PIXIV_LITE_APP_TOKEN`
 
-The App should be installed only on the repositories it actually needs; for the first integration that is `AloiceC/pixiv-lite-app` only.
+The token is long-lived and therefore cannot be revoked after each run like a GitHub App installation token. BuildFarm limits exposure instead: the PAT is injected only into the source-acquisition step and the final commit-status step. Private build/test commands receive no repository credential. Rotate the token manually if it is exposed or no longer needed.
 
-## Private source and diagnostics
+The older `PIXIV_LITE_APP_CLIENT_ID` and `PIXIV_LITE_APP_PRIVATE_KEY` settings are not used by the PAT path and may be removed after the PAT-backed CI path is validated.
+
+## Private source and result reporting
 
 The reusable BuildFarm v1 workflow downloads an exact GitHub archive snapshot. It does not run `actions/checkout` against the private repository and does not copy Git history.
 
 Private source command stdout/stderr is captured to runner-local files. The public BuildFarm console receives only stage summaries, exact SHA, status, duration, and safe hashes/sizes.
 
-Sanitized failure diagnostics are written back to the corresponding private commit via GitHub Check Runs.
+PAT-backed runs write the final result to the exact private commit using a Commit Status such as `BuildFarm / check`. Commit Status supports only a short description and target URL, so full sanitized diagnostics are not attached to the private commit. Runner-local diagnostics are still removed during cleanup.
 
 ## Binary delivery
 

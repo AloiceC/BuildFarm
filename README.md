@@ -23,15 +23,15 @@ See [`docs/PRIVATE_PROJECT_SECURITY.md`](docs/PRIVATE_PROJECT_SECURITY.md) for t
 
 ## BuildFarm v1 private-project standard
 
-All private projects use one unified pattern:
+All private projects use one unified source-handoff/build pattern, while the repository credential backend may differ by project:
 
 1. The private repository exposes the handoff ref `ci/buildfarm`.
 2. BuildFarm resolves that ref to an exact commit SHA before building.
-3. One dedicated project-scoped GitHub App provides only `Metadata: read + Contents: read + Checks: write`.
+3. Prefer a dedicated project-scoped GitHub App with only the required repository permissions. Where GitHub App installation is not viable, a repository-restricted fine-grained PAT may be used as a documented fallback.
 4. BuildFarm downloads the exact SHA through GitHub's archive API; it does **not** use `actions/checkout` against the private repository and does not copy Git history.
-5. The source token is revoked immediately after source acquisition.
+5. GitHub App source tokens are revoked immediately after source acquisition. Fine-grained PATs are long-lived, so they are exposed only to the specific source/result steps and never to private build commands.
 6. Private-source stdout/stderr stays out of public BuildFarm logs.
-7. Sanitized failure diagnostics are written back to the private commit as a Check Run using a newly generated short-lived token.
+7. Results are written back to the exact private commit using the project's configured backend: Check Run for GitHub App integrations or Commit Status for PAT fallback integrations.
 8. Normal private binaries are hashed then discarded; raw APK/EXE/ZIP files are not uploaded publicly.
 9. Test-delivery packages are encrypted with the owner's age public recipient and only the `.age` ciphertext is uploaded as a public artifact.
 10. Self-hosted runners are not part of the v1 delivery model.
@@ -62,4 +62,4 @@ projects/<project>/       # thin public-safe project adapter
 
 ## Current onboarding status
 
-Pixiv Lite App is the first project wired to the unified BuildFarm v1 private-project path. MintLink and future private projects should reuse the same source-token/archive/check-run/age-delivery conventions rather than creating project-specific alternatives.
+Pixiv Lite App is the first private Flutter project wired to BuildFarm v1 and currently uses the fine-grained-PAT/Commit-Status fallback path. Celeste Basecamp remains on the GitHub-App/Check-Run Tauri path. MintLink is not yet being validated in this round.

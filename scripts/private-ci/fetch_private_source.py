@@ -119,6 +119,14 @@ def require_green_check(repo: str, sha: str, token: str, name: str) -> None:
         raise ValueError("required private validation check is not green for this SHA")
 
 
+def require_green_status(repo: str, sha: str, token: str, context: str) -> None:
+    data = request_json(f"{API}/repos/{repo}/commits/{sha}/status?per_page=100", token)
+    statuses = data.get("statuses") or []
+    latest = next((item for item in statuses if item.get("context") == context), None)
+    if latest is None or latest.get("state") != "success":
+        raise ValueError("required private validation status is not green for this SHA")
+
+
 def safe_extract(zip_path: Path, dest: Path) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
     dest_resolved = dest.resolve()
@@ -142,6 +150,12 @@ def main() -> int:
     parser.add_argument("--source-sha", default="")
     parser.add_argument("--task", required=True)
     parser.add_argument("--dest", required=True)
+    parser.add_argument("--token-kind", choices=("github-app", "pat"), default="github-app")
+    parser.add_argument(
+        "--validation-backend",
+        choices=("check-run", "commit-status"),
+        default="check-run",
+    )
     args = parser.parse_args()
 
     token = os.environ.get("BUILDFARM_SOURCE_TOKEN", "")
@@ -159,24 +173,29 @@ def main() -> int:
         write_output("sha", sha)
 
         if args.task != "check":
-            require_green_check(args.repo, sha, token, "BuildFarm / check")
+            if args.validation_backend == "commit-status":
+                require_green_status(args.repo, sha, token, "BuildFarm / check")
+            else:
+                require_green_check(args.repo, sha, token, "BuildFarm / check")
 
         fd, raw_path = tempfile.mkstemp(prefix="buildfarm-source-", suffix=".zip")
         os.close(fd)
         tmp_zip = Path(raw_path)
         download_archive(f"{API}/repos/{args.repo}/zipball/{sha}", token, tmp_zip)
 
-        # BuildFarm v1 source credentials end here. Extraction/build runs credential-free.
-        revoke(token)
-        token_revoked = True
+        if args.token_kind == "github-app":
+            revoke(token)
+            token_revoked = True
         token = ""
+        os.environ.pop("BUILDFARM_SOURCE_TOKEN", None)
 
         dest = Path(args.dest)
         if dest.exists():
             shutil.rmtree(dest)
         source_root = safe_extract(tmp_zip, dest)
         write_output("source_dir", str(source_root))
-        print(f"SOURCE sha={sha} status=PASS token=released")
+        release_mode = "revoked" if args.token_kind == "github-app" else "step-scoped"
+        print(f"SOURCE sha={sha} status=PASS credential={release_mode}")
         return 0
     except (ValueError, OSError, urllib.error.URLError, zipfile.BadZipFile):
         print("SOURCE status=FAIL")
@@ -187,7 +206,7 @@ def main() -> int:
                 tmp_zip.unlink(missing_ok=True)
             except OSError:
                 pass
-        if not token_revoked and token:
+        if args.token_kind == "github-app" and not token_revoked and token:
             revoke(token)
 
 

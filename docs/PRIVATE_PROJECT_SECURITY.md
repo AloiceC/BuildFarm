@@ -2,7 +2,7 @@
 
 BuildFarm is public. Any workflow that builds a private project must assume that workflow files, run metadata, normal Actions logs, and BuildFarm artifacts are public.
 
-This document is the unified v1 contract. Private projects should not invent alternative source-transfer, diagnostic, or delivery mechanisms.
+This document is the unified v1 contract. Private projects should reuse the same source-handoff/build boundary. Authentication/result backends may differ only when documented by the project adapter.
 
 ## Source handoff
 
@@ -16,11 +16,13 @@ At runtime BuildFarm resolves that ref to one exact commit SHA. Reproducibility/
 
 Do not accept arbitrary repository names from workflow input. Every public project adapter hard-codes its allowed source repository.
 
-## GitHub App model
+## Private repository credentials
 
-Each private project gets one dedicated GitHub App for its first BuildFarm integration.
+### Preferred GitHub App backend
 
-Required repository permissions only:
+A dedicated project-scoped GitHub App remains the preferred backend when it can be installed reliably.
+
+Typical repository permissions:
 
 - Metadata: read
 - Contents: read
@@ -30,23 +32,39 @@ Do not grant Contents write, Actions write, Administration, or broad account-wid
 
 The private key lives only in BuildFarm Actions secrets. It is never committed.
 
-### Source token lifecycle
+Source installation tokens are short-lived and are revoked immediately after source acquisition. Result reporting uses a fresh minimum-scope token and revokes it after writing the Check Run.
 
-1. Create a short-lived GitHub App installation token.
-2. Resolve `ci/buildfarm` (or an explicit full SHA) to the exact commit SHA.
-3. If a platform build/delivery task is requested, verify that `BuildFarm / check` is already successful on the same exact SHA.
-4. Download that SHA through the GitHub archive API into the hosted runner temporary workspace.
-5. Extract the archive without copying Git history.
-6. Revoke the source token immediately after source acquisition.
-7. Run private project commands with no private source credential present.
+### Fine-grained PAT fallback
+
+When GitHub App installation is not viable, a project may use a repository-restricted fine-grained PAT as a documented fallback.
+
+For the Pixiv Lite App PAT path the token is restricted to `AloiceC/pixiv-lite-app` and needs only:
+
+- Contents: read
+- Commit statuses: read and write
+
+A fine-grained PAT is long-lived and cannot be revoked per workflow run. Therefore BuildFarm must inject it only into the source-acquisition step and the final result-status step. The private build/test command step must not receive the PAT in its environment.
+
+Rotate or delete the PAT when it is exposed, no longer required, or superseded.
+
+## Source credential lifecycle
+
+1. Resolve `ci/buildfarm` (or an explicit full SHA) to the exact commit SHA.
+2. If a platform build/delivery task is requested, verify that `BuildFarm / check` is already successful on the same exact SHA using the project's configured result backend.
+3. Download that SHA through the GitHub archive API into the hosted runner temporary workspace.
+4. Extract the archive without copying Git history.
+5. For GitHub App integrations, revoke the source token immediately.
+6. For fine-grained PAT integrations, remove the token from the source helper process and rely on step-scoped secret injection; later build/test steps receive no source credential.
 
 BuildFarm must not use `actions/checkout` against the private project repository.
 
-### Result token lifecycle
+## Result reporting
 
-After the private task completes, create a new short-lived token with the minimum permission needed to write the Check Run. Post the sanitized result to the exact private commit, then revoke that result token.
+GitHub App integrations write a private Check Run, which may include sanitized diagnostic text.
 
-Do not keep one installation token alive across source acquisition and result reporting.
+Fine-grained PAT fallback integrations write a Commit Status such as `BuildFarm / check`. Commit Status supports only a short description and target URL; it cannot carry the full sanitized diagnostic body available to a Check Run.
+
+Result credentials must be scoped only to the result-writing step. Public BuildFarm logs must never print token values.
 
 ## Public log boundary
 
@@ -64,19 +82,17 @@ Public logs may contain only safe operational summaries such as:
 
 Private compiler output, source snippets, test source excerpts, credentials, private absolute paths, and full stack traces must stay out of the public log.
 
-Runner-local logs are sanitized before any failure detail is sent back to the private repository. At minimum, sanitization must remove source excerpts, absolute source-root paths, obvious credential/token forms, ANSI control sequences, and unbounded lines/output.
-
-Sanitized diagnostics are written to the private commit as a GitHub Check Run.
+Runner-local logs are sanitized before any failure detail is sent to a backend that supports private diagnostic text. At minimum, sanitization must remove source excerpts, absolute source-root paths, obvious credential/token forms, ANSI control sequences, and unbounded lines/output.
 
 ## Build/check separation
 
 The platform-independent `check` task is run once per exact SHA.
 
-Platform build and delivery tasks require a successful private `BuildFarm / check` Check Run on that same SHA; they must not repeat analyze/test merely because a Windows or Android build is requested.
+Platform build and delivery tasks require a successful private `BuildFarm / check` result on that same SHA; they must not repeat analyze/test merely because a Windows or Android build is requested. The gate may read a Check Run or Commit Status according to the project's configured backend.
 
 Use `concurrency` + `cancel-in-progress` so a newer task supersedes an older task of the same project/task class.
 
-Do not high-frequency retry CI. Read the private Check Run, make a concrete source/config change, move `ci/buildfarm` when appropriate, then run again.
+Do not high-frequency retry CI. Read the available private result metadata, make a concrete source/config change, move `ci/buildfarm` when appropriate, then run again.
 
 ## Binary policy
 
