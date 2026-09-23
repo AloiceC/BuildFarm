@@ -1,0 +1,29 @@
+name: Celeste Basecamp · CI Smoke
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/celeste-ci-smoke.yml'
+      - 'scripts/private-ci/post_private_status.py'
+      - 'projects/celeste-basecamp/smoke-trigger.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buildfarm-celeste-basecamp-ci-smoke
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check private source
+    uses: ./.github/workflows/private-tauri-v1.yml
+    with:
+      project_id: celeste-basecamp
+      task: check
+      auth_backend: fine-grained-pat
+    secrets:
+      repo_token: ${{ secrets.CELESTE_BASECAMP_TOKEN }}
