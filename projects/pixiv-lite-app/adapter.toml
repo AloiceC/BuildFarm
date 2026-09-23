@@ -4,6 +4,5 @@ source_repo = "AloiceC/pixiv-lite-app"
 handoff_ref = "ci/buildfarm"
 manifest_path = "ci/buildfarm.toml"
 
-# Public-safe delivery metadata. Fill with the owner's age public recipient
-# before the first delivery build. The age private key never enters BuildFarm.
-age_recipient = ""
+# Public-safe delivery metadata. The age private key never enters BuildFarm.
+age_recipient = "age10k73ngxuxftlzmjkum783s4m4258pz8nw8dd69maxzg65zderfpqakmesg"
