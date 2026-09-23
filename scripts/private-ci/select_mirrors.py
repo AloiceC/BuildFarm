@@ -5,7 +5,6 @@ import sys
 import urllib.request
 
 CFUG_PUB = "https://pub.flutter-io.cn"
-CFUG_STORAGE = "https://storage.flutter-io.cn"
 OFFICIAL_PUB = "https://pub.dev"
 OFFICIAL_STORAGE = "https://storage.googleapis.com"
 
@@ -32,20 +31,18 @@ def write_output(name: str, value: str) -> None:
 
 
 def main() -> int:
-    use_cfug = probe(f"{CFUG_STORAGE}/flutter_infra_release/releases/releases_linux.json") and probe(CFUG_PUB)
-    if use_cfug:
-        pub = CFUG_PUB
-        storage = CFUG_STORAGE
-        label = "cfug"
-    else:
-        pub = OFFICIAL_PUB
-        storage = OFFICIAL_STORAGE
-        label = "official"
+    # Pub packages may use the reachable CFUG mirror, but Flutter SDK/engine
+    # artifacts stay on the official storage source. A shallow HEAD probe of a
+    # mirror index cannot validate multi-gigabyte SDK archive integrity.
+    use_cfug_pub = probe(CFUG_PUB)
+    pub = CFUG_PUB if use_cfug_pub else OFFICIAL_PUB
+    pub_label = "cfug" if use_cfug_pub else "official"
+    storage = OFFICIAL_STORAGE
 
     write_output("pub_hosted_url", pub)
     write_output("flutter_storage_base_url", storage)
-    write_output("mirror", label)
-    print(f"MIRROR flutter={label} status=PASS")
+    write_output("mirror", pub_label)
+    print(f"MIRROR pub={pub_label} storage=official status=PASS")
     return 0
 
 
