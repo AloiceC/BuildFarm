@@ -24,10 +24,10 @@ Required repository permissions:
 - Contents: read
 - Checks: write
 
-BuildFarm repository secrets expected by `.github/workflows/pixiv-lite-app.yml`:
+BuildFarm configuration expected by `.github/workflows/pixiv-lite-app.yml`:
 
-- `PIXIV_LITE_APP_ID`
-- `PIXIV_LITE_APP_PRIVATE_KEY`
+- repository variable `PIXIV_LITE_APP_CLIENT_ID`
+- repository secret `PIXIV_LITE_APP_PRIVATE_KEY`
 
 The App should be installed only on the repositories it actually needs; for the first integration that is `AloiceC/pixiv-lite-app` only.
 
