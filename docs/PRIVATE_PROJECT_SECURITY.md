@@ -1,47 +1,121 @@
-# Private project security model
+# BuildFarm v1 — Private project security model
 
-BuildFarm is public. Any workflow that builds a private project must be designed under the assumption that **BuildFarm workflow files, run metadata, and normal Actions logs are public**.
+BuildFarm is public. Any workflow that builds a private project must assume that workflow files, run metadata, normal Actions logs, and BuildFarm artifacts are public.
 
-## Non-negotiable rules
+This document is the unified v1 contract. Private projects should not invent alternative source-transfer, diagnostic, or delivery mechanisms.
 
-1. Never mirror or commit private project source into BuildFarm.
-2. Never store private credentials in repository files. Use GitHub Actions secrets only.
-3. Use one project-scoped credential per private project. Do not reuse a broad account-wide token across projects.
-4. Private-source workflows must hard-code the allowed source repository. Do not accept an arbitrary `owner/repo` input while a private-source credential is available.
-5. Prefer a fine-grained PAT or GitHub App token restricted to the exact private repository and the minimum permissions needed.
-6. Source checkout credentials should be read-only (`Contents: Read`) whenever possible and must use `persist-credentials: false`.
-7. Never run secret-bearing private-source jobs from `pull_request`, `pull_request_target`, or untrusted fork-controlled code. Initial private-project workflows are manual (`workflow_dispatch`) only.
-8. Public BuildFarm artifacts are not suitable for private binaries, private logs, proprietary assets, or other private build output.
-9. Commands that compile private source should not stream verbose compiler output into BuildFarm public logs by default. Detailed private logs need a private egress path before they are enabled.
-10. Project-specific secrets must never be shared between project workflows unless the project owner explicitly broadens their scope.
+## Source handoff
 
-## Recommended two-stage onboarding
+Each private project uses the private-repository branch:
 
-### Stage A — public toolchain smoke
+```text
+ci/buildfarm
+```
 
-Before any private token is added, reproduce the required toolchain using a generated/public dummy project on the standard GitHub-hosted runner. This validates runner image, SDK, Gradle, Flutter/Rust/etc. compatibility without exposing the private source.
+At runtime BuildFarm resolves that ref to one exact commit SHA. Reproducibility/debugging may supply a full exact SHA directly.
 
-### Stage B — private source build
+Do not accept arbitrary repository names from workflow input. Every public project adapter hard-codes its allowed source repository.
 
-Only after Stage A is green:
+## GitHub App model
 
-- add a project-scoped read-only source token as a BuildFarm Actions secret;
-- use a project-specific workflow with a fixed source repository;
-- redirect verbose private compiler output away from the public console;
-- define a private destination for failure logs and final binaries before uploading either;
-- keep the public console limited to toolchain versions, high-level stages, exit status, hashes, and other non-sensitive metadata.
+Each private project gets one dedicated GitHub App for its first BuildFarm integration.
 
-## Artifact policy
+Required repository permissions only:
 
-Do not use `actions/upload-artifact` for private-project binaries or detailed private logs in this public repository. Public BuildFarm artifacts must be treated as public.
+- Metadata: read
+- Contents: read
+- Checks: write
 
-For private projects, prefer a private destination owned by that project (for example, a private repository release or another explicitly approved private storage destination) using a separate narrowly-scoped write credential.
+Do not grant Contents write, Actions write, Administration, or broad account-wide repository access.
 
-## Token naming convention
+The private key lives only in BuildFarm Actions secrets. It is never committed.
 
-Project-specific secrets should make their scope obvious. Example for MintLink:
+### Source token lifecycle
 
-- `MINTLINK_SOURCE_TOKEN` — fine-grained token, only `AloiceC/MintLink`, `Contents: Read`.
-- `MINTLINK_DELIVERY_TOKEN` — optional, only `AloiceC/MintLink`, minimum write permission required for the chosen private artifact destination.
+1. Create a short-lived GitHub App installation token.
+2. Resolve `ci/buildfarm` (or an explicit full SHA) to the exact commit SHA.
+3. If a platform build/delivery task is requested, verify that `BuildFarm / check` is already successful on the same exact SHA.
+4. Download that SHA through the GitHub archive API into the hosted runner temporary workspace.
+5. Extract the archive without copying Git history.
+6. Revoke the source token immediately after source acquisition.
+7. Run private project commands with no private source credential present.
 
-Do not replace these with a single broad `repo` token unless there is no narrower supported option and the owner explicitly accepts that risk.
+BuildFarm must not use `actions/checkout` against the private project repository.
+
+### Result token lifecycle
+
+After the private task completes, create a new short-lived token with the minimum permission needed to write the Check Run. Post the sanitized result to the exact private commit, then revoke that result token.
+
+Do not keep one installation token alive across source acquisition and result reporting.
+
+## Public log boundary
+
+Private-source commands must not stream stdout/stderr directly into BuildFarm's public Actions log.
+
+Public logs may contain only safe operational summaries such as:
+
+- project id;
+- resolved exact SHA;
+- stage name;
+- PASS / FAIL;
+- duration;
+- selected trusted mirror/fallback;
+- binary/ciphertext size and SHA-256.
+
+Private compiler output, source snippets, test source excerpts, credentials, private absolute paths, and full stack traces must stay out of the public log.
+
+Runner-local logs are sanitized before any failure detail is sent back to the private repository. At minimum, sanitization must remove source excerpts, absolute source-root paths, obvious credential/token forms, ANSI control sequences, and unbounded lines/output.
+
+Sanitized diagnostics are written to the private commit as a GitHub Check Run.
+
+## Build/check separation
+
+The platform-independent `check` task is run once per exact SHA.
+
+Platform build and delivery tasks require a successful private `BuildFarm / check` Check Run on that same SHA; they must not repeat analyze/test merely because a Windows or Android build is requested.
+
+Use `concurrency` + `cancel-in-progress` so a newer task supersedes an older task of the same project/task class.
+
+Do not high-frequency retry CI. Read the private Check Run, make a concrete source/config change, move `ci/buildfarm` when appropriate, then run again.
+
+## Binary policy
+
+### Normal CI build
+
+A normal private-project Windows/Android build is verification only:
+
+1. build the binary;
+2. calculate safe size/SHA-256 metadata;
+3. delete the raw package from the runner;
+4. do not upload APK/EXE/ZIP as a BuildFarm artifact.
+
+### User delivery build
+
+When the owner needs a package for real testing:
+
+1. build the package;
+2. encrypt it with the owner's age public recipient;
+3. delete the raw package;
+4. upload only the `.age` ciphertext through `actions/upload-artifact`;
+5. keep the age private key only on the owner's local machine.
+
+Self-hosted runners are not part of the BuildFarm v1 delivery design.
+
+## Project/build ownership
+
+The private project repository remains the only source of truth for:
+
+- lockfiles;
+- project/toolchain versions;
+- private build manifest;
+- project-specific compatibility lessons;
+- architecture and roadmap;
+- private project history/status.
+
+BuildFarm contains only reusable public infrastructure and a thin public-safe adapter for each project.
+
+## Mirrors
+
+Prefer trusted and verifiable China mirrors when available and useful. Probe/fallback to official sources where practical. Never use unknown GitHub accelerators or opaque third-party download proxies just for speed.
+
+The current approved public examples include CFUG Flutter/Pub mirrors and an explicitly probed Aliyun Gradle distribution mirror. Android SDK packages stay on Google's official infrastructure unless an equally trustworthy/verifiable alternative is deliberately approved.
