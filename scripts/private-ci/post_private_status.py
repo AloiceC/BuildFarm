@@ -10,6 +10,7 @@ import urllib.request
 
 API = "https://api.github.com"
 ISSUE_COUNT_RE = re.compile(r"\b(\d+)\s+(?:issue|issues)\s+found\b", re.IGNORECASE)
+LOCATION_RE = re.compile(r"^(.*?):(\d+)(?::\d+)?$")
 
 
 def post_json(url: str, token: str, body: dict) -> dict:
@@ -32,6 +33,15 @@ def post_json(url: str, token: str, body: dict) -> dict:
 
 def status_context(task: str) -> str:
     return f"BuildFarm / {task.replace('build-', '').replace('deliver-', 'deliver-')}"
+
+
+def compact_location(location: str) -> str:
+    normalized = location.replace("<src>/", "")
+    match = LOCATION_RE.match(normalized)
+    if not match:
+        return Path(normalized).name
+    path, line = match.groups()
+    return f"{Path(path).name}:{line}"
 
 
 def compact_diagnostic(diagnostics_dir: str, failed_stage: str | None) -> str:
@@ -57,25 +67,24 @@ def compact_diagnostic(diagnostics_dir: str, failed_stage: str | None) -> str:
                 count = match.group(1)
                 break
 
-        diagnostic = ""
+        diagnostics: list[str] = []
         for line in lines:
             if "•" not in line:
                 continue
             parts = [part.strip() for part in line.split("•") if part.strip()]
-            if len(parts) >= 3:
-                code = parts[-1]
-                location = parts[-2].replace("<src>/", "")
-                diagnostic = f"{code} @ {location}"
-            else:
-                diagnostic = line
-            break
+            if len(parts) < 3:
+                continue
+            code = parts[-1]
+            location = compact_location(parts[-2])
+            diagnostics.append(f"{code}@{location}")
+            if len(diagnostics) == 3:
+                break
 
-        if diagnostic and count:
-            return f"{count} issues; {diagnostic}"
-        if diagnostic:
-            return diagnostic
+        prefix = f"{count} issues" if count else "issues"
+        if diagnostics:
+            return f"{prefix}; " + "; ".join(diagnostics)
         if count:
-            return f"{count} issues"
+            return prefix
 
     ignored_prefixes = ("analyzing ", "no sanitized diagnostic text")
     for line in lines:
