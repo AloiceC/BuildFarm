@@ -148,6 +148,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Write sanitized Check Run to private repository
+        id: private_check
         if: ${{ always() && steps.report_token.outcome == 'success' }}
         shell: pwsh
         env:
@@ -187,6 +188,14 @@ jobs:
           }
           if ('${{ inputs.deliver_artifact }}' -eq 'true' -and '${{ steps.delivery.outcome }}' -ne 'success') {
             Write-Host 'Encrypted delivery: FAIL'
+            exit 1
+          }
+          if ('${{ steps.report_token.outcome }}' -ne 'success') {
+            Write-Host 'Private Check token: FAIL'
+            exit 1
+          }
+          if ('${{ steps.private_check.outcome }}' -ne 'success') {
+            Write-Host 'Private Check Run: FAIL'
             exit 1
           }
           Write-Host 'Private validation: PASS'
