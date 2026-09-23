@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -90,8 +92,6 @@ def run_git(args: list[str], cwd: Path, env: dict[str, str]) -> subprocess.Compl
 
 def classify_git_failure(stderr: str) -> str:
     text = stderr.lower()
-    if "cannot run" in text and "askpass" in text:
-        return "askpass-launch"
     if "authentication failed" in text or "could not read username" in text:
         return "auth"
     if "repository not found" in text or "not found" in text:
@@ -103,52 +103,47 @@ def classify_git_failure(stderr: str) -> str:
     return "git-failure"
 
 
-def create_askpass() -> tuple[Path, list[Path]]:
-    fd, helper_raw = tempfile.mkstemp(prefix="buildfarm-askpass-", suffix=".py")
-    os.close(fd)
-    helper = Path(helper_raw)
-    helper.write_text(
-        "#!/usr/bin/env python3\n"
-        "import os, sys\n"
-        "prompt = sys.argv[1].lower() if len(sys.argv) > 1 else ''\n"
-        "if 'username' in prompt:\n"
-        "    print(os.environ.get('BUILDFARM_GIT_USERNAME', 'buildfarm'))\n"
-        "else:\n"
-        "    print(os.environ.get('BUILDFARM_GIT_TOKEN', ''))\n",
-        encoding="utf-8",
-    )
+def remove_tree(path: Path) -> None:
+    if not path.exists():
+        return
 
-    if os.name != "nt":
-        helper.chmod(0o700)
-        return helper, [helper]
+    def make_writable_and_retry(func, raw_path, exc_info):
+        try:
+            os.chmod(raw_path, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            pass
+        func(raw_path)
 
-    fd, launcher_raw = tempfile.mkstemp(prefix="buildfarm-askpass-", suffix=".cmd")
-    os.close(fd)
-    launcher = Path(launcher_raw)
-    launcher.write_text(
-        "@echo off\r\n"
-        f'"{sys.executable}" "{helper}" %*\r\n',
-        encoding="utf-8",
+    shutil.rmtree(path, onerror=make_writable_and_retry)
+
+
+def pat_git_environment(token: str) -> dict[str, str]:
+    # Match GitHub's mature HTTPS Git transport pattern without persisting the
+    # credential in .git/config or putting it on the command line. Git reads
+    # these config entries only from this child-process environment.
+    credential = base64.b64encode(
+        f"x-access-token:{token}".encode("utf-8")
+    ).decode("ascii")
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+            "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {credential}",
+        }
     )
-    return launcher, [launcher, helper]
+    return env
 
 
 def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> Path:
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        remove_tree(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise GitSourceError("workspace-setup") from exc
 
-    askpass, askpass_files = create_askpass()
-
-    git_env = os.environ.copy()
-    git_env.update(
-        {
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_ASKPASS": str(askpass),
-            "BUILDFARM_GIT_USERNAME": "buildfarm",
-            "BUILDFARM_GIT_TOKEN": token,
-        }
-    )
+    git_env = pat_git_environment(token)
 
     try:
         result = run_git(["init", "--quiet"], destination, git_env)
@@ -164,7 +159,11 @@ def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> 
         if result.returncode != 0:
             raise GitSourceError(classify_git_failure(result.stderr))
 
-        result = run_git(["checkout", "--quiet", "--detach", "FETCH_HEAD"], destination, git_env)
+        result = run_git(
+            ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+            destination,
+            git_env,
+        )
         if result.returncode != 0:
             raise GitSourceError(classify_git_failure(result.stderr))
 
@@ -173,17 +172,13 @@ def fetch_exact_with_git(repo: str, sha: str, token: str, destination: Path) -> 
         if resolved != sha.lower():
             raise GitSourceError("sha-mismatch")
 
-        git_dir = destination / ".git"
-        if git_dir.exists():
-            shutil.rmtree(git_dir)
+        try:
+            remove_tree(destination / ".git")
+        except OSError as exc:
+            raise GitSourceError("git-metadata-cleanup") from exc
         return destination
     finally:
-        git_env["BUILDFARM_GIT_TOKEN"] = ""
-        for path in askpass_files:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        git_env["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: basic <released>"
 
 
 def revoke(token: str) -> None:
@@ -347,7 +342,7 @@ def main() -> int:
             token = ""
             os.environ.pop("BUILDFARM_SOURCE_TOKEN", None)
             write_output("source_dir", str(source_root))
-            print(f"SOURCE sha={sha} status=PASS credential=step-scoped transport=git")
+            print(f"SOURCE sha={sha} status=PASS credential=step-scoped transport=git-header")
             return 0
 
         fd, raw_path = tempfile.mkstemp(prefix="buildfarm-source-", suffix=".zip")
@@ -363,8 +358,7 @@ def main() -> int:
 
         stage = "extract-archive"
         dest = Path(args.dest)
-        if dest.exists():
-            shutil.rmtree(dest)
+        remove_tree(dest)
         source_root = safe_extract(tmp_zip, dest)
         write_output("source_dir", str(source_root))
         print(f"SOURCE sha={sha} status=PASS token=released")
@@ -380,8 +374,17 @@ def main() -> int:
     except urllib.error.URLError:
         print(f"SOURCE status=FAIL stage={stage} reason=network")
         return 1
-    except (ValueError, OSError, zipfile.BadZipFile):
-        print(f"SOURCE status=FAIL stage={stage} reason=local")
+    except ValueError:
+        print(f"SOURCE status=FAIL stage={stage} reason=value-error")
+        return 1
+    except OSError as exc:
+        print(
+            f"SOURCE status=FAIL stage={stage} reason=os-error "
+            f"type={type(exc).__name__}"
+        )
+        return 1
+    except zipfile.BadZipFile:
+        print(f"SOURCE status=FAIL stage={stage} reason=bad-zip")
         return 1
     finally:
         if tmp_zip is not None:
