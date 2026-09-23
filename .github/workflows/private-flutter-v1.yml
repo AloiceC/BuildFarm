@@ -74,6 +74,10 @@ jobs:
           --manifest "${{ steps.adapter.outputs.manifest_path }}"
           --expected-project "${{ inputs.project_id }}"
 
+      - name: Require age recipient for delivery tasks
+        if: ${{ startsWith(inputs.task, 'deliver-') && steps.manifest.outputs.delivery_ready != 'true' }}
+        run: python -c "import sys; print('DELIVERY_CONFIG status=FAIL reason=age-recipient-unset'); sys.exit(1)"
+
       - name: Select trusted Flutter mirrors
         id: mirrors
         run: python scripts/private-ci/select_mirrors.py
