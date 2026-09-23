@@ -316,6 +316,7 @@ def main() -> int:
             "--org",
             str(flutter["organization"]),
             "--platforms=" + ",".join(platforms),
+            "--no-pub",
             ".",
         ]
         if not runner.stage("flutter_create", flutter_command(*create_args), cwd=app):
