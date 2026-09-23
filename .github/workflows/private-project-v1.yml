@@ -1,0 +1,192 @@
+name: Private project v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: Private project adapter
+        required: true
+        type: choice
+        options:
+          - celeste-basecamp
+      commit_sha:
+        description: Optional exact 40-character commit SHA. Empty resolves ci/buildfarm.
+        required: false
+        type: string
+      deliver_artifact:
+        description: Encrypt and upload the project-defined acceptance package
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buildfarm-private-${{ inputs.project }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: ${{ inputs.project }} · private v1
+    runs-on: windows-latest
+    timeout-minutes: 120
+    environment:
+      name: private-${{ inputs.project }}
+
+    steps:
+      - name: Load BuildFarm public infrastructure
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Read public adapter
+        id: adapter
+        shell: pwsh
+        run: >
+          ./scripts/private-project/Read-Adapter.ps1
+          -Project '${{ inputs.project }}'
+          -OutputFile $env:GITHUB_OUTPUT
+
+      - name: Create short-lived source token
+        id: source_token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.SOURCE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SOURCE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.adapter.outputs.owner }}
+          repositories: ${{ steps.adapter.outputs.repository_name }}
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Resolve handoff and fetch exact SHA archive
+        id: source
+        shell: pwsh
+        env:
+          SOURCE_TOKEN: ${{ steps.source_token.outputs.token }}
+        run: >
+          ./scripts/private-project/Fetch-SourceArchive.ps1
+          -Repository '${{ steps.adapter.outputs.repository }}'
+          -HandoffRef '${{ steps.adapter.outputs.handoff_ref }}'
+          -RequestedSha '${{ inputs.commit_sha }}'
+          -Token $env:SOURCE_TOKEN
+          -OutputFile $env:GITHUB_OUTPUT
+
+      - name: Revoke source token immediately
+        if: ${{ always() && steps.source_token.outcome == 'success' }}
+        shell: pwsh
+        env:
+          SOURCE_TOKEN: ${{ steps.source_token.outputs.token }}
+        run: ./scripts/private-project/Revoke-InstallationToken.ps1 -Token $env:SOURCE_TOKEN
+
+      - name: Show locked source
+        if: ${{ steps.source.outcome == 'success' }}
+        shell: pwsh
+        run: Write-Host "Source SHA ${{ steps.source.outputs.sha }}"
+
+      - name: Read private build manifest
+        if: ${{ steps.source.outcome == 'success' }}
+        id: manifest
+        shell: pwsh
+        run: >
+          ./scripts/private-project/Read-PrivateManifest.ps1
+          -SourceDir '${{ steps.source.outputs.source_dir }}'
+          -ManifestPath '${{ steps.adapter.outputs.project_manifest }}'
+          -ExpectedProject '${{ inputs.project }}'
+          -OutputFile $env:GITHUB_OUTPUT
+
+      - name: Set up project Node.js
+        if: ${{ steps.manifest.outcome == 'success' && steps.manifest.outputs.node_version != '' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.manifest.outputs.node_version }}
+
+      - name: Run private validation with suppressed logs
+        if: ${{ steps.manifest.outcome == 'success' }}
+        id: validation
+        shell: pwsh
+        run: >
+          ./scripts/private-project/Run-PrivateManifest.ps1
+          -SourceDir '${{ steps.source.outputs.source_dir }}'
+          -ManifestPath '${{ steps.adapter.outputs.project_manifest }}'
+          -ResultPath (Join-Path $env:RUNNER_TEMP 'buildfarm-private-result.json')
+          -OutputFile $env:GITHUB_OUTPUT
+
+      - name: Prepare encrypted acceptance package
+        if: ${{ inputs.deliver_artifact && steps.validation.outputs.result == 'success' }}
+        id: delivery
+        shell: pwsh
+        env:
+          AGE_RECIPIENT: ${{ vars.AGE_RECIPIENT }}
+        run: >
+          ./scripts/private-project/Protect-Artifact.ps1
+          -SourceDir '${{ steps.source.outputs.source_dir }}'
+          -ManifestPath '${{ steps.adapter.outputs.project_manifest }}'
+          -CommitSha '${{ steps.source.outputs.sha }}'
+          -Recipient $env:AGE_RECIPIENT
+          -OutputFile $env:GITHUB_OUTPUT
+
+      - name: Upload encrypted acceptance package
+        if: ${{ inputs.deliver_artifact && steps.delivery.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.delivery.outputs.artifact_name }}
+          path: ${{ steps.delivery.outputs.encrypted_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create short-lived report token
+        if: ${{ always() && steps.source.outputs.sha != '' }}
+        id: report_token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.SOURCE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SOURCE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.adapter.outputs.owner }}
+          repositories: ${{ steps.adapter.outputs.repository_name }}
+          permission-checks: write
+          skip-token-revoke: true
+
+      - name: Write sanitized Check Run to private repository
+        if: ${{ always() && steps.report_token.outcome == 'success' }}
+        shell: pwsh
+        env:
+          REPORT_TOKEN: ${{ steps.report_token.outputs.token }}
+        run: >
+          ./scripts/private-project/Publish-PrivateCheck.ps1
+          -Repository '${{ steps.adapter.outputs.repository }}'
+          -CommitSha '${{ steps.source.outputs.sha }}'
+          -Project '${{ inputs.project }}'
+          -ResultPath (Join-Path $env:RUNNER_TEMP 'buildfarm-private-result.json')
+          -Token $env:REPORT_TOKEN
+          -DeliveryRequested ('${{ inputs.deliver_artifact }}' -eq 'true')
+          -DeliverySucceeded ('${{ steps.delivery.outcome }}' -eq 'success')
+
+      - name: Revoke report token immediately
+        if: ${{ always() && steps.report_token.outcome == 'success' }}
+        shell: pwsh
+        env:
+          REPORT_TOKEN: ${{ steps.report_token.outputs.token }}
+        run: ./scripts/private-project/Revoke-InstallationToken.ps1 -Token $env:REPORT_TOKEN
+
+      - name: Final public result
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          if ('${{ steps.source.outcome }}' -ne 'success') {
+            Write-Host 'BuildFarm source handoff: FAIL'
+            exit 1
+          }
+          if ('${{ steps.manifest.outcome }}' -ne 'success') {
+            Write-Host 'BuildFarm manifest: FAIL'
+            exit 1
+          }
+          if ('${{ steps.validation.outputs.result }}' -ne 'success') {
+            Write-Host 'Private validation: FAIL'
+            exit 1
+          }
+          if ('${{ inputs.deliver_artifact }}' -eq 'true' -and '${{ steps.delivery.outcome }}' -ne 'success') {
+            Write-Host 'Encrypted delivery: FAIL'
+            exit 1
+          }
+          Write-Host 'Private validation: PASS'

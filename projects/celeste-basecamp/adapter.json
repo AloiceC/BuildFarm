@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "project_id": "celeste-basecamp",
+  "source_repository": "AloiceC/Celeste-Basecamp",
+  "handoff_ref": "ci/buildfarm",
+  "project_manifest": ".buildfarm/project.json"
+}
