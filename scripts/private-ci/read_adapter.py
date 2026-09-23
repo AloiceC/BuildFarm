@@ -30,11 +30,14 @@ def main() -> int:
         handoff_ref = str(data.get("handoff_ref", "ci/buildfarm"))
         manifest_path = str(data.get("manifest_path", "ci/buildfarm.toml"))
 
-        if "/" not in source_repo or handoff_ref != "ci/buildfarm":
+        if source_repo.count("/") != 1 or handoff_ref != "ci/buildfarm":
             raise ValueError("adapter violates BuildFarm v1 source rules")
+        source_owner, source_name = source_repo.split("/", 1)
 
         write_output("project_id", project_id)
         write_output("source_repo", source_repo)
+        write_output("source_owner", source_owner)
+        write_output("source_name", source_name)
         write_output("handoff_ref", handoff_ref)
         write_output("manifest_path", manifest_path)
         print(f"ADAPTER project={project_id} status=PASS")
