@@ -1,0 +1,133 @@
+name: Flutter Android 37 smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/smoke]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buildfarm-flutter-android37-smoke
+  cancel-in-progress: true
+
+env:
+  PUB_HOSTED_URL: https://pub.flutter-io.cn
+  FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+
+jobs:
+  android37:
+    name: Windows hosted · Flutter 3.47.5 · Android 37
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter 3.47.5
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.5'
+          channel: stable
+          cache: true
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          flutter --version
+          java -version
+          Write-Host "ANDROID_HOME=$env:ANDROID_HOME"
+          flutter doctor -v
+
+      - name: Install Android 37.0 SDK
+        shell: pwsh
+        run: |
+          $sdkmanager = (Get-Command sdkmanager.bat -ErrorAction SilentlyContinue).Source
+          if (-not $sdkmanager) {
+            $candidate = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
+            if (Test-Path $candidate) { $sdkmanager = $candidate }
+          }
+          if (-not $sdkmanager) { throw 'sdkmanager.bat not found on windows-latest.' }
+
+          $cmd = 'echo y|"' + $sdkmanager + '" --channel=3 "platforms;android-37.0" "build-tools;37.0.0"'
+          cmd.exe /d /c $cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $androidJar = Join-Path $env:ANDROID_HOME 'platforms\android-37.0\android.jar'
+          if (-not (Test-Path $androidJar)) {
+            throw "Android 37.0 platform did not materialize at $androidJar"
+          }
+
+      - name: Generate clean Flutter app
+        shell: pwsh
+        run: |
+          flutter create --platforms=android --org io.github.aloicec --project-name buildfarm_smoke buildfarm_smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Pin API 37 and compatible AGP
+        shell: pwsh
+        working-directory: buildfarm_smoke
+        run: |
+          $app = 'android/app/build.gradle.kts'
+          $appText = Get-Content $app -Raw
+          $appText = $appText.Replace('compileSdk = flutter.compileSdkVersion', 'compileSdk = 37')
+          $appText = $appText.Replace('targetSdk = flutter.targetSdkVersion', 'targetSdk = 37')
+          Set-Content -Path $app -Value $appText -Encoding UTF8
+
+          $settings = 'android/settings.gradle.kts'
+          $settingsText = Get-Content $settings -Raw
+          $settingsText = [regex]::Replace(
+            $settingsText,
+            'id\("com\.android\.application"\) version "[^"]+" apply false',
+            'id("com.android.application") version "9.1.1" apply false'
+          )
+          Set-Content -Path $settings -Value $settingsText -Encoding UTF8
+
+          $wrapper = 'android/gradle/wrapper/gradle-wrapper.properties'
+          $wrapperText = Get-Content $wrapper -Raw
+          if ($wrapperText -notmatch 'gradle-9\.3\.1-(bin|all)\.zip') {
+            $wrapperText = [regex]::Replace(
+              $wrapperText,
+              'distributionUrl=.*gradle-[^-\r\n]+-(bin|all)\.zip',
+              'distributionUrl=https\://services.gradle.org/distributions/gradle-9.3.1-all.zip'
+            )
+          }
+
+          $mirror = 'https://mirrors.aliyun.com/github/releases/gradle/gradle-distributions/v9.3.1/gradle-9.3.1-all.zip'
+          & curl.exe -L --fail --silent --show-error --head --max-time 15 $mirror | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            $wrapperText = [regex]::Replace(
+              $wrapperText,
+              'distributionUrl=.*gradle-9\.3\.1-(bin|all)\.zip',
+              'distributionUrl=https\://mirrors.aliyun.com/github/releases/gradle/gradle-distributions/v9.3.1/gradle-9.3.1-all.zip'
+            )
+            Write-Host 'Using verified Aliyun Gradle 9.3.1 mirror.'
+          } else {
+            Write-Warning 'Aliyun Gradle mirror probe failed; retaining official Gradle distribution URL.'
+          }
+          Set-Content -Path $wrapper -Value $wrapperText -Encoding UTF8
+
+          Write-Host '--- settings.gradle.kts ---'
+          Get-Content $settings
+          Write-Host '--- app/build.gradle.kts ---'
+          Get-Content $app
+          Write-Host '--- gradle-wrapper.properties ---'
+          Get-Content $wrapper
+
+      - name: Build Android release smoke APK
+        shell: pwsh
+        working-directory: buildfarm_smoke
+        run: |
+          flutter build apk --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $apk = 'build/app/outputs/flutter-apk/app-release.apk'
+          if (-not (Test-Path $apk)) { throw 'Release APK was not produced.' }
+          $hash = (Get-FileHash $apk -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item $apk).Length
+          Write-Host "SMOKE_OK apk=$apk bytes=$size sha256=$hash"
