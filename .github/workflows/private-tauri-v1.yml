@@ -16,6 +16,10 @@ on:
       github_app_client_id:
         required: true
         type: string
+    outputs:
+      source_sha:
+        description: Exact private source commit used by this run
+        value: ${{ jobs.run.outputs.source_sha }}
     secrets:
       app_private_key:
         required: true
@@ -32,6 +36,8 @@ jobs:
     name: ${{ inputs.project_id }} · ${{ inputs.task }}
     runs-on: windows-latest
     timeout-minutes: 120
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
 
     steps:
       - name: Checkout public BuildFarm infrastructure
